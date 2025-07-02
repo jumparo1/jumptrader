@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # 🚀 JumpTrader - AI-Powered Trading Dashboard
 
 A comprehensive, modular trading dashboard for monitoring Binance perpetual futures with real-time AI-powered signal detection.
@@ -238,3 +239,7 @@ For questions, issues, or feature requests:
 - Open an issue on GitHub
 - Check the documentation
 - Review the configuration options 
+=======
+# jumptrader
+AI trading ZC tool
+>>>>>>> 1eb42c02959704f7186df161323a5a2d6333c80f
