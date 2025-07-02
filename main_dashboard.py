@@ -1,192 +1,273 @@
-import asyncio
-import logging
 import streamlit as st
+import requests
+import pandas as pd
 import time
 from datetime import datetime
-import sys
-import os
-import threading
-
-# Ensure there's an event loop for Streamlit's thread
-try:
-    loop = asyncio.get_event_loop()
-except RuntimeError:
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-
-# Add project root to path
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-
-from data.market_data_manager import MarketDataManager
-from signals.signal_processor import SignalProcessor
-from ui.dashboard_components import (
-    create_header, create_sidebar_controls, create_status_indicators,
-    create_signal_summary, create_main_data_table, create_performance_metrics
-)
-from config.settings import DEFAULT_SYMBOLS_LIMIT, AUTO_REFRESH_INTERVAL
+import logging
 
 # Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Initialize session state
-if 'data_manager' not in st.session_state:
-    st.session_state.data_manager = None
-if 'signal_processor' not in st.session_state:
-    st.session_state.signal_processor = None
-if 'is_initialized' not in st.session_state:
-    st.session_state.is_initialized = False
-if 'last_refresh' not in st.session_state:
-    st.session_state.last_refresh = None
+# Page config
+st.set_page_config(
+    page_title="JumpTrader - AI Trading Dashboard",
+    page_icon="🚀",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
-def initialize_components():
-    """Initialize data manager and signal processor."""
-    if not st.session_state.is_initialized:
-        try:
-            st.session_state.data_manager = MarketDataManager()
-            st.session_state.signal_processor = SignalProcessor()
-            st.session_state.is_initialized = True
-            logger.info("Components initialized successfully")
-        except Exception as e:
-            st.error(f"Error initializing components: {e}")
-            logger.error(f"Error initializing components: {e}")
+# Binance API endpoints
+BINANCE_BASE_URL = "https://fapi.binance.com"
+EXCHANGE_INFO_URL = f"{BINANCE_BASE_URL}/fapi/v1/exchangeInfo"
+TICKER_24H_URL = f"{BINANCE_BASE_URL}/fapi/v1/ticker/24hr"
+KLINES_URL = f"{BINANCE_BASE_URL}/fapi/v1/klines"
 
-def data_callback(data_type: str, data: dict):
-    """Callback function for data updates."""
+@st.cache_data(ttl=300)  # Cache for 5 minutes
+def get_perpetual_symbols():
+    """Get all perpetual trading symbols from Binance."""
     try:
-        if data_type == 'market_data':
-            # Process signals when new market data arrives
-            signals = st.session_state.signal_processor.process_market_data(
-                data, 
-                st.session_state.data_manager.klines_data
-            )
-            st.session_state.current_signals = signals
-            logger.info(f"Processed signals for {len(signals)} symbols")
+        response = requests.get(EXCHANGE_INFO_URL, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+        
+        symbols = [
+            symbol["symbol"] for symbol in data["symbols"]
+            if symbol["contractType"] == "PERPETUAL" and symbol["status"] == "TRADING"
+        ]
+        logger.info(f"Found {len(symbols)} perpetual symbols")
+        return symbols
     except Exception as e:
-        logger.error(f"Error in data callback: {e}")
+        logger.error(f"Error fetching symbols: {e}")
+        return []
+
+@st.cache_data(ttl=60)  # Cache for 1 minute
+def get_24h_ticker_data(symbol):
+    """Get 24h ticker data for a symbol."""
+    try:
+        response = requests.get(f"{TICKER_24H_URL}?symbol={symbol}", timeout=5)
+        response.raise_for_status()
+        data = response.json()
+        
+        return {
+            "symbol": symbol,
+            "lastPrice": float(data.get("lastPrice", 0)),
+            "priceChangePercent": float(data.get("priceChangePercent", 0)),
+            "volume": float(data.get("volume", 0)),
+            "quoteVolume": float(data.get("quoteVolume", 0)),
+            "highPrice": float(data.get("highPrice", 0)),
+            "lowPrice": float(data.get("lowPrice", 0)),
+            "openPrice": float(data.get("openPrice", 0)),
+            "count": int(data.get("count", 0))
+        }
+    except Exception as e:
+        logger.error(f"Error fetching ticker for {symbol}: {e}")
+        return None
+
+@st.cache_data(ttl=60)  # Cache for 1 minute
+def get_klines_data(symbol, interval="1h", limit=2):
+    """Get klines/candlestick data for a symbol."""
+    try:
+        params = {
+            "symbol": symbol,
+            "interval": interval,
+            "limit": limit
+        }
+        response = requests.get(KLINES_URL, params=params, timeout=5)
+        response.raise_for_status()
+        data = response.json()
+        
+        if len(data) >= 2:
+            prev_close = float(data[0][4])  # Previous close
+            last_close = float(data[1][4])  # Current close
+            change_1h = ((last_close - prev_close) / prev_close) * 100
+            return change_1h
+        return 0.0
+    except Exception as e:
+        logger.error(f"Error fetching klines for {symbol}: {e}")
+        return 0.0
+
+def compute_signals(row):
+    """Compute trading signals based on data."""
+    signals = []
+    
+    # Volume spike signal
+    if row["quoteVolume"] > 500_000_000:  # 500M volume
+        signals.append("🔥 Volume Spike")
+    
+    # 1h momentum signal
+    if row["change_1h"] > 3:
+        signals.append("📈 1H Bullish")
+    elif row["change_1h"] < -3:
+        signals.append("📉 1H Bearish")
+    
+    # 24h volatility signal
+    if abs(row["priceChangePercent"]) > 10:
+        signals.append("⚠️ High Volatility")
+    
+    # Price action signals
+    if row["lastPrice"] > row["highPrice"] * 0.99:
+        signals.append("🚀 Near High")
+    elif row["lastPrice"] < row["lowPrice"] * 1.01:
+        signals.append("📉 Near Low")
+    
+    return ", ".join(signals) if signals else "-"
 
 def main():
-    """Main dashboard application."""
-    # Create header
-    create_header()
+    # Header
+    st.title("🚀 JumpTrader - AI Trading Dashboard")
+    st.markdown("Real-time Binance Perpetuals with AI-Powered Signals")
     
-    # Initialize components
-    initialize_components()
+    # Sidebar controls
+    st.sidebar.header("⚙️ Dashboard Controls")
     
-    if not st.session_state.is_initialized:
-        st.error("Failed to initialize dashboard components")
+    # Get symbols
+    symbols = get_perpetual_symbols()
+    if not symbols:
+        st.error("Failed to fetch symbols from Binance")
         return
     
-    # Get sidebar controls
-    controls = create_sidebar_controls()
+    # Symbol limit control
+    symbol_limit = st.sidebar.slider(
+        "Number of symbols to display",
+        min_value=10,
+        max_value=min(500, len(symbols)),
+        value=100,
+        step=10
+    )
     
-    # Sidebar info
-    st.sidebar.markdown("---")
-    st.sidebar.subheader("ℹ️ About")
-    st.sidebar.markdown("""
-    **JumpTrader** is an AI-powered trading dashboard that monitors Binance perpetual futures.
+    # Auto-refresh control
+    st.sidebar.header("🔄 Auto-Refresh")
+    refresh_interval = st.sidebar.number_input(
+        "Refresh interval (seconds)",
+        min_value=10,
+        value=60,
+        step=5
+    )
     
-    **Features:**
-    - Real-time market data
-    - AI signal detection
-    - Volume spike alerts
-    - Momentum pattern recognition
-    - Range break detection
+    # Status indicators
+    col1, col2, col3, col4 = st.columns(4)
     
-    **Data Sources:**
-    - Binance Futures API
-    - WebSocket streams
-    - Orion Protocol (future)
-    """)
+    with col1:
+        st.metric("🔗 Connection", "✅ Connected")
     
-    # Main content area
-    try:
-        # Get symbols
-        symbols = st.session_state.data_manager.get_perpetual_symbols()
-        if not symbols:
-            st.error("Failed to fetch perpetual symbols from Binance")
-            return
+    with col2:
+        st.metric("📊 Symbols Available", len(symbols))
+    
+    with col3:
+        st.metric("🕒 Last Update", datetime.now().strftime("%H:%M:%S"))
+    
+    with col4:
+        st.metric("⚡ Refresh Rate", f"{refresh_interval}s")
+    
+    # Main data section
+    st.header("📈 Market Data")
+    
+    # Progress bar for data fetching
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    
+    # Fetch data for selected symbols
+    status_text.text("Fetching market data...")
+    
+    market_data = []
+    symbols_to_fetch = symbols[:symbol_limit]
+    
+    for i, symbol in enumerate(symbols_to_fetch):
+        # Update progress
+        progress = (i + 1) / len(symbols_to_fetch)
+        progress_bar.progress(progress)
+        status_text.text(f"Fetching data for {symbol}... ({i+1}/{len(symbols_to_fetch)})")
         
-        # Limit symbols based on user selection
-        symbols = symbols[:controls["symbol_limit"]]
-        
-        # Start data collection if not already running
-        if not st.session_state.data_manager.is_running:
-            # Add data callback
-            st.session_state.data_manager.add_data_callback(data_callback)
+        # Get ticker data
+        ticker_data = get_24h_ticker_data(symbol)
+        if ticker_data:
+            # Get 1h change
+            change_1h = get_klines_data(symbol, "1h", 2)
             
-            def start_data_collection_thread(symbols):
-                st.session_state.data_manager.start_data_collection_sync(symbols)
-            thread = threading.Thread(target=start_data_collection_thread, args=(symbols,), daemon=True)
-            thread.start()
-            st.info(f"Starting data collection for {len(symbols)} symbols...")
+            # Combine data
+            row_data = {
+                **ticker_data,
+                "change_1h": change_1h
+            }
+            
+            # Compute signals
+            row_data["signals"] = compute_signals(row_data)
+            
+            market_data.append(row_data)
         
-        # Status indicators
-        create_status_indicators(st.session_state.data_manager, st.session_state.signal_processor)
+        # Small delay to avoid rate limiting
+        time.sleep(0.01)
+    
+    progress_bar.progress(1.0)
+    status_text.text("Data loaded successfully!")
+    
+    if market_data:
+        # Convert to DataFrame
+        df = pd.DataFrame(market_data)
         
-        # Performance metrics
-        market_data = st.session_state.data_manager.get_latest_data('market_data')
-        if market_data:
-            create_performance_metrics(market_data)
+        # Sort by 24h change
+        df = df.sort_values("priceChangePercent", ascending=False)
         
-        # Signal summary
-        current_signals = getattr(st.session_state, 'current_signals', {})
-        if current_signals:
-            create_signal_summary(current_signals)
+        # Format display columns
+        display_df = df[[
+            "symbol", "lastPrice", "change_1h", "priceChangePercent", 
+            "quoteVolume", "highPrice", "lowPrice", "signals"
+        ]].copy()
         
-        # Main data table
-        create_main_data_table(market_data, current_signals, controls)
+        # Format numbers
+        display_df["lastPrice"] = display_df["lastPrice"].round(4)
+        display_df["change_1h"] = display_df["change_1h"].round(2)
+        display_df["priceChangePercent"] = display_df["priceChangePercent"].round(2)
+        display_df["quoteVolume"] = (display_df["quoteVolume"] / 1_000_000).round(1)  # Convert to millions
         
-        # Auto-refresh logic
-        if controls["auto_refresh"]:
-            current_time = datetime.now()
-            if (st.session_state.last_refresh is None or 
-                (current_time - st.session_state.last_refresh).total_seconds() >= controls["refresh_interval"]):
-                
-                st.session_state.last_refresh = current_time
-                st.rerun()
+        # Rename columns for display
+        display_df.columns = [
+            "Symbol", "Price", "1H %", "24H %", "Volume (M)", "High", "Low", "Signals"
+        ]
         
-        # Manual refresh button
-        if st.button("🔄 Manual Refresh"):
-            st.rerun()
+        # Display the data
+        st.dataframe(
+            display_df,
+            use_container_width=True,
+            height=600
+        )
         
-        # Data age information
-        st.sidebar.markdown("---")
-        st.sidebar.subheader("📊 Data Status")
+        # Summary statistics
+        st.subheader("📊 Summary Statistics")
+        col1, col2, col3, col4 = st.columns(4)
         
-        market_data_age = st.session_state.data_manager.get_data_age('market_data')
-        if market_data_age:
-            st.sidebar.metric("Market Data Age", f"{market_data_age.total_seconds():.0f}s")
+        with col1:
+            gainers = len(df[df["priceChangePercent"] > 0])
+            st.metric("📈 Gainers", gainers)
         
-        klines_data_age = st.session_state.data_manager.get_data_age('klines_data')
-        if klines_data_age:
-            st.sidebar.metric("Klines Data Age", f"{klines_data_age.total_seconds():.0f}s")
+        with col2:
+            losers = len(df[df["priceChangePercent"] < 0])
+            st.metric("📉 Losers", losers)
         
-        # Connection status
-        st.sidebar.markdown("---")
-        st.sidebar.subheader("🔗 Connection Status")
+        with col3:
+            avg_volume = df["quoteVolume"].mean() / 1_000_000
+            st.metric("💰 Avg Volume (M)", f"{avg_volume:.1f}")
         
-        if st.session_state.data_manager.is_running:
-            st.sidebar.success("✅ Data Collection Active")
-        else:
-            st.sidebar.error("❌ Data Collection Stopped")
+        with col4:
+            volatile = len(df[abs(df["priceChangePercent"]) > 10])
+            st.metric("⚠️ High Volatility", volatile)
         
-        if st.session_state.data_manager.binance_client.client:
-            st.sidebar.success("✅ Binance API Connected")
-        else:
-            st.sidebar.warning("⚠️ Binance API (Public Only)")
-        
-        if st.session_state.data_manager.orion_client:
-            st.sidebar.info("ℹ️ Orion Integration Available")
-        else:
-            st.sidebar.info("ℹ️ Orion Integration Disabled")
-        
-    except Exception as e:
-        st.error(f"Error in main dashboard: {e}")
-        logger.error(f"Error in main dashboard: {e}")
+    else:
+        st.warning("No market data available. Please check your connection.")
+    
+    # Footer
+    st.markdown("---")
+    st.markdown(
+        """
+        **About JumpTrader:**
+        - Real-time Binance perpetual futures data
+        - AI-powered signal detection
+        - Volume spike alerts
+        - Momentum pattern recognition
+        - Range break detection
+        """
+    )
 
 if __name__ == "__main__":
     main() 

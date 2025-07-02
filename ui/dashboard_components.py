@@ -111,8 +111,11 @@ def create_status_indicators(data_manager, signal_processor):
     
     with col2:
         # Signal count indicator
-        latest_signals = signal_processor.signal_history.get(max(signal_processor.signal_history.keys()), {})
-        total_signals = sum(len(signals) for signals in latest_signals.values())
+        if signal_processor.signal_history:
+            latest_signals = signal_processor.signal_history.get(max(signal_processor.signal_history.keys()), {})
+            total_signals = sum(len(signals) for signals in latest_signals.values())
+        else:
+            total_signals = 0
         st.metric("🎯 Active Signals", total_signals)
     
     with col3:
@@ -126,6 +129,12 @@ def create_status_indicators(data_manager, signal_processor):
         # Symbol count
         symbol_count = len(data_manager.market_data)
         st.metric("📈 Symbols", symbol_count)
+        
+        # Debug info
+        if symbol_count == 0:
+            st.warning("⚠️ No market data available")
+        else:
+            st.success(f"✅ {symbol_count} symbols loaded")
 
 def create_signal_summary(signals: Dict[str, List[str]]):
     """Create a summary of signal types."""

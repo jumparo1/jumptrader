@@ -132,16 +132,22 @@ class BinanceDataClient:
     def get_funding_rate(self, symbol: str) -> Optional[Dict]:
         """Get current funding rate for a symbol."""
         try:
-            params = {"symbol": symbol}
+            params = {"symbol": symbol, "limit": 1}
             response = requests.get(f"{BINANCE_REST_URL}/fapi/v1/fundingRate", params=params)
             response.raise_for_status()
             
             data = response.json()
+            # Handle list response from Binance API
+            if isinstance(data, list) and data:
+                data = data[0]  # Get the first (most recent) funding rate
+            else:
+                return None
+                
             return {
                 "symbol": data["symbol"],
                 "funding_rate": float(data["fundingRate"]),
                 "funding_time": data["fundingTime"],
-                "next_funding_time": data["nextFundingTime"]
+                "next_funding_time": data.get("nextFundingTime", 0)
             }
             
         except Exception as e:

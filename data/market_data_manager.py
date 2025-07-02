@@ -68,6 +68,7 @@ class MarketDataManager:
         batch_size = 50
         for i in range(0, len(symbols), batch_size):
             batch = symbols[i:i + batch_size]
+            logger.info(f"Processing batch {i//batch_size + 1}, symbols: {batch[:3]}...")  # Log first 3 symbols
             
             # Fetch 24h ticker data
             for symbol in batch:
@@ -83,6 +84,8 @@ class MarketDataManager:
                     funding_data = self.binance_client.get_funding_rate(symbol)
                     if funding_data:
                         market_data[symbol]['funding_rate'] = funding_data
+                else:
+                    logger.warning(f"No ticker data received for {symbol}")
             
             # Small delay between batches
             await asyncio.sleep(0.1)
@@ -90,6 +93,8 @@ class MarketDataManager:
         # Store the data
         self.market_data.update(market_data)
         self.last_update['market_data'] = datetime.now()
+        
+        logger.info(f"Stored market data: {len(self.market_data)} total symbols in memory")
         
         # Notify callbacks
         self._notify_callbacks('market_data', market_data)
@@ -276,6 +281,7 @@ class MarketDataManager:
     def get_latest_data(self, data_type: str = 'market_data') -> Dict:
         """Get the latest data of a specific type."""
         if data_type == 'market_data':
+            logger.info(f"Getting market data: {len(self.market_data)} symbols available")
             return self.market_data
         elif data_type == 'klines_data':
             return self.klines_data
@@ -307,4 +313,9 @@ class MarketDataManager:
     def start_data_collection_sync(self, symbols: list):
         """Synchronous wrapper to run async data collection in a thread."""
         import asyncio
-        asyncio.run(self.start_data_collection(symbols)) 
+        try:
+            logger.info(f"Starting data collection for {len(symbols)} symbols")
+            asyncio.run(self.start_data_collection(symbols))
+        except Exception as e:
+            logger.error(f"Error in start_data_collection_sync: {e}")
+            raise e 
