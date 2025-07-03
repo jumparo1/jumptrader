@@ -2,13 +2,14 @@ import json
 import subprocess
 import logging
 from typing import Dict, Any, List, Optional
+from clients.binance import get_open_interest, get_latest_funding_rate
 
 logger = logging.getLogger(__name__)
 
-def fetch_orion_data(symbols: Optional[List[str]] = None) -> Dict[str, Any]:
+def fetch_orion_data(symbols: List[str]) -> Dict[str, Any]:
     """
     Calls the Orion Terminal CLI in JSON mode to get all perpetuals.
-    If symbols is provided, returns a dict for those symbols (with defaults if missing).
+    For any missing symbols, falls back to Binance REST for open interest and funding rate.
     Returns: { symbol: { 'tickCount': ..., 'fundingRate': ..., ... } }
     """
     try:
@@ -24,20 +25,22 @@ def fetch_orion_data(symbols: Optional[List[str]] = None) -> Dict[str, Any]:
         raw = json.loads(result.stdout)
         logger.info(f"Orion CLI returned {len(raw)} perpetual records")
         raw_dict = {item["symbol"]: item for item in raw}
-        if symbols is not None:
-            result_dict = {}
-            missing = []
-            for sym in symbols:
-                if sym in raw_dict:
-                    result_dict[sym] = raw_dict[sym]
-                else:
-                    result_dict[sym] = {"tickCount": 0, "fundingRate": 0.0, "openInterest": 0.0}
-                    missing.append(sym)
-            if missing:
-                logger.warning(f"Orion CLI missing data for: {missing}")
-            return result_dict
-        else:
-            return raw_dict
+        result_dict = {}
+        missing = []
+        for sym in symbols:
+            if sym in raw_dict:
+                result_dict[sym] = raw_dict[sym]
+            else:
+                missing.append(sym)
+                # fallback via Binance REST
+                result_dict[sym] = {
+                    "tickCount":    0,
+                    "fundingRate":  get_latest_funding_rate(sym),
+                    "openInterest": get_open_interest(sym)
+                }
+        if missing:
+            logger.warning(f"Orion CLI returned no data for: {missing}, used REST fallback")
+        return result_dict
     except subprocess.TimeoutExpired:
         logger.error("Orion CLI command timed out after 30 seconds")
         return {}

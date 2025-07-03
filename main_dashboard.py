@@ -8,6 +8,7 @@ import asyncio
 import threading
 from clients.ws_client import WebSocketClient
 from clients.orion_cli import fetch_orion_data, test_orion_cli
+from clients.binance import get_btc_correlation
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -15,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 # Initialize WebSocket queue and tick storage
 if 'tick_queue' not in st.session_state:
-    st.session_state.tick_queue = asyncio.Queue()
+    st.session_state.tick_queue = None
     
 if 'ticks' not in st.session_state:
     st.session_state.ticks = {}
@@ -139,6 +140,9 @@ def start_websocket_client(symbols):
         try:
             # Focus on top 10 symbols for faster loading
             ws_symbols = symbols[:10]  # top 10 symbols only
+            # Create queue in the thread with event loop
+            if st.session_state.tick_queue is None:
+                st.session_state.tick_queue = asyncio.Queue()
             client = WebSocketClient(ws_symbols, st.session_state.tick_queue)
             
             def run_websocket():
@@ -163,14 +167,15 @@ def start_websocket_client(symbols):
 def consume_ticks():
     """Consume ticks from the queue and update session state."""
     try:
-        while not st.session_state.tick_queue.empty():
-            tick = st.session_state.tick_queue.get_nowait()
-            sym = tick["symbol"]
-            st.session_state.ticks[sym] = {
-                "last_tick_price": tick["price"],
-                "tick_volume": tick["qty"],
-                "tick_timestamp": tick["timestamp"]
-            }
+        if st.session_state.tick_queue is not None:
+            while not st.session_state.tick_queue.empty():
+                tick = st.session_state.tick_queue.get_nowait()
+                sym = tick["symbol"]
+                st.session_state.ticks[sym] = {
+                    "last_tick_price": tick["price"],
+                    "tick_volume": tick["qty"],
+                    "tick_timestamp": tick["timestamp"]
+                }
     except Exception as e:
         logger.error(f"Error consuming ticks: {e}")
 
@@ -307,10 +312,14 @@ def main():
             funding_rate = float(orion_info.get("fundingRate", 0))
             open_interest = float(orion_info.get("openInterest", 0))
             
+            # Get BTC correlation
+            btc_corr = get_btc_correlation(symbol)
+            
             # Combine data
             row_data = {
                 **ticker_data,
                 "change_1h": change_1h,
+                "btc_corr": btc_corr,
                 "last_tick_price": last_tick_price,
                 "tick_volume": tick_volume,
                 "tickCount": tick_count,
@@ -338,13 +347,14 @@ def main():
         
         # Format display columns
         display_df = df[[
-            "symbol", "lastPrice", "change_1h", "priceChangePercent", 
+            "symbol", "lastPrice", "change_1h", "btc_corr", "priceChangePercent", 
             "quoteVolume", "tickCount", "fundingRate", "openInterest", "signals"
         ]].copy()
         
         # Format numbers
         display_df["lastPrice"] = display_df["lastPrice"].round(4)
         display_df["change_1h"] = display_df["change_1h"].round(2)
+        display_df["btc_corr"] = display_df["btc_corr"].round(2)
         display_df["priceChangePercent"] = display_df["priceChangePercent"].round(2)
         display_df["quoteVolume"] = (display_df["quoteVolume"] / 1_000_000).round(1)  # Convert to millions
         
@@ -355,13 +365,21 @@ def main():
         
         # Rename columns for display
         display_df.columns = [
-            "Symbol", "Price", "1H %", "24H %", "Volume (M)", 
+            "Symbol", "Price", "1H %", "BTC Corr", "24H %", "Volume (M)", 
             "Tick Count", "Funding %", "OI (M)", "Signals"
         ]
         
+        # Style: color 1H %
+        styled = display_df.style.applymap(
+            lambda v: "color: green;" if v > 0 else "color: red;",
+            subset=["1H %"]
+        ).format({
+            "BTC Corr": "{:.2f}"
+        })
+        
         # Display the data
         st.dataframe(
-            display_df,
+            styled,
             use_container_width=True,
             height=600
         )
