@@ -4,10 +4,24 @@ import pandas as pd
 import time
 from datetime import datetime
 import logging
+import asyncio
+import threading
+from clients.ws_client import WebSocketClient
+from clients.orion_cli import fetch_orion_data, test_orion_cli
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Initialize WebSocket queue and tick storage
+if 'tick_queue' not in st.session_state:
+    st.session_state.tick_queue = asyncio.Queue()
+    
+if 'ticks' not in st.session_state:
+    st.session_state.ticks = {}
+    
+if 'ws_started' not in st.session_state:
+    st.session_state.ws_started = False
 
 # Page config
 st.set_page_config(
@@ -111,12 +125,68 @@ def compute_signals(row):
     elif row["lastPrice"] < row["lowPrice"] * 1.01:
         signals.append("📉 Near Low")
     
+    # Real-time tick signals
+    if "last_tick_price" in row and row["last_tick_price"] and row["last_tick_price"] > 0:
+        tick_change = ((row["last_tick_price"] - row["lastPrice"]) / row["lastPrice"]) * 100
+        if abs(tick_change) > 0.5:  # 0.5% tick change
+            signals.append("⚡ Tick Spike")
+    
     return ", ".join(signals) if signals else "-"
+
+def start_websocket_client(symbols):
+    """Start WebSocket client in a separate thread."""
+    if not st.session_state.ws_started:
+        try:
+            # Focus on top 10 symbols for faster loading
+            ws_symbols = symbols[:10]  # top 10 symbols only
+            client = WebSocketClient(ws_symbols, st.session_state.tick_queue)
+            
+            def run_websocket():
+                # Create a new event loop for this thread
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                try:
+                    loop.run_until_complete(client.run())
+                except Exception as e:
+                    logger.error(f"WebSocket error: {e}")
+                finally:
+                    loop.close()
+            
+            thread = threading.Thread(target=run_websocket, daemon=True)
+            thread.start()
+            st.session_state.ws_started = True
+            st.session_state.ws_client = client
+            logger.info(f"WebSocket client started for {len(ws_symbols)} symbols")
+        except Exception as e:
+            logger.error(f"Failed to start WebSocket client: {e}")
+
+def consume_ticks():
+    """Consume ticks from the queue and update session state."""
+    try:
+        while not st.session_state.tick_queue.empty():
+            tick = st.session_state.tick_queue.get_nowait()
+            sym = tick["symbol"]
+            st.session_state.ticks[sym] = {
+                "last_tick_price": tick["price"],
+                "tick_volume": tick["qty"],
+                "tick_timestamp": tick["timestamp"]
+            }
+    except Exception as e:
+        logger.error(f"Error consuming ticks: {e}")
+
+@st.cache_data(ttl=15)
+def get_orion_snapshot(symbols=None):
+    try:
+        return fetch_orion_data(symbols)
+    except Exception as e:
+        logger.error(f"Error fetching Orion data: {e}")
+        return {}
 
 def main():
     # Header
     st.title("🚀 JumpTrader - AI Trading Dashboard")
     st.markdown("Real-time Binance Perpetuals with AI-Powered Signals")
+    st.info("⚡ **Optimized Mode**: Loading top 10 perpetual contracts for faster performance")
     
     # Sidebar controls
     st.sidebar.header("⚙️ Dashboard Controls")
@@ -127,14 +197,35 @@ def main():
         st.error("Failed to fetch symbols from Binance")
         return
     
-    # Symbol limit control
+    # Start WebSocket client for real-time ticks
+    start_websocket_client(symbols)
+    
+    # Consume any available ticks
+    consume_ticks()
+    
+    # Test and fetch Orion CLI data
+    orion_available = test_orion_cli()
+    # Symbol limit control - optimized for top 10
     symbol_limit = st.sidebar.slider(
         "Number of symbols to display",
-        min_value=10,
-        max_value=min(500, len(symbols)),
-        value=100,
-        step=10
+        min_value=5,
+        max_value=min(50, len(symbols)),
+        value=10,
+        step=5
     )
+    symbols_to_fetch = symbols[:symbol_limit]
+    if orion_available:
+        orion_data = get_orion_snapshot(symbols_to_fetch)
+        st.session_state.orion_data = orion_data
+        logger.info(f"Orion CLI data loaded: {len(orion_data)} symbols")
+        # Optionally, show a warning if any symbols are missing (all will be present, but some may be all-zero)
+        missing = [s for s, v in orion_data.items() if v["tickCount"] == 0 and v["fundingRate"] == 0.0 and v["openInterest"] == 0.0]
+        if missing:
+            st.warning(f"Orion CLI returned no data for: {missing}")
+            logger.warning(f"Orion CLI returned no data for: {missing}")
+    else:
+        st.session_state.orion_data = {}
+        logger.warning("Orion CLI not available")
     
     # Auto-refresh control
     st.sidebar.header("🔄 Auto-Refresh")
@@ -146,19 +237,31 @@ def main():
     )
     
     # Status indicators
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2, col3, col4, col5 = st.columns(5)
     
     with col1:
         st.metric("🔗 Connection", "✅ Connected")
     
     with col2:
-        st.metric("📊 Symbols Available", len(symbols))
+        st.metric("📊 Symbols Available", f"{symbol_limit}/{len(symbols)}")
     
     with col3:
         st.metric("🕒 Last Update", datetime.now().strftime("%H:%M:%S"))
     
     with col4:
         st.metric("⚡ Refresh Rate", f"{refresh_interval}s")
+        
+    with col5:
+        ws_status = "🟢 Active" if st.session_state.ws_started else "🔴 Inactive"
+        tick_count = len(st.session_state.ticks)
+        st.metric("📡 WebSocket", f"{ws_status} ({tick_count} ticks)")
+        
+    # Add Orion CLI status
+    col6, col7 = st.columns(2)
+    with col6:
+        orion_status = "🟢 Active" if st.session_state.get('orion_data', {}) else "🔴 Inactive"
+        orion_count = len(st.session_state.get('orion_data', {}))
+        st.metric("🔧 Orion CLI", f"{orion_status} ({orion_count} symbols)")
     
     # Main data section
     st.header("📈 Market Data")
@@ -185,10 +288,34 @@ def main():
             # Get 1h change
             change_1h = get_klines_data(symbol, "1h", 2)
             
+            # Get real-time tick data
+            tick_info = st.session_state.ticks.get(symbol, {})
+            last_tick_price = tick_info.get("last_tick_price", 0.0)
+            tick_volume = tick_info.get("tick_volume", 0.0)
+            
+            # Ensure numeric values
+            try:
+                last_tick_price = float(last_tick_price) if last_tick_price else 0.0
+                tick_volume = float(tick_volume) if tick_volume else 0.0
+            except (ValueError, TypeError):
+                last_tick_price = 0.0
+                tick_volume = 0.0
+            
+            # Get Orion CLI data
+            orion_info = st.session_state.orion_data.get(symbol, {})
+            tick_count = orion_info.get("tickCount", 0)
+            funding_rate = float(orion_info.get("fundingRate", 0))
+            open_interest = float(orion_info.get("openInterest", 0))
+            
             # Combine data
             row_data = {
                 **ticker_data,
-                "change_1h": change_1h
+                "change_1h": change_1h,
+                "last_tick_price": last_tick_price,
+                "tick_volume": tick_volume,
+                "tickCount": tick_count,
+                "fundingRate": funding_rate,
+                "openInterest": open_interest
             }
             
             # Compute signals
@@ -196,8 +323,8 @@ def main():
             
             market_data.append(row_data)
         
-        # Small delay to avoid rate limiting
-        time.sleep(0.01)
+        # Minimal delay for faster loading with fewer symbols
+        time.sleep(0.005)
     
     progress_bar.progress(1.0)
     status_text.text("Data loaded successfully!")
@@ -212,7 +339,7 @@ def main():
         # Format display columns
         display_df = df[[
             "symbol", "lastPrice", "change_1h", "priceChangePercent", 
-            "quoteVolume", "highPrice", "lowPrice", "signals"
+            "quoteVolume", "tickCount", "fundingRate", "openInterest", "signals"
         ]].copy()
         
         # Format numbers
@@ -221,9 +348,15 @@ def main():
         display_df["priceChangePercent"] = display_df["priceChangePercent"].round(2)
         display_df["quoteVolume"] = (display_df["quoteVolume"] / 1_000_000).round(1)  # Convert to millions
         
+        # Format Orion data
+        display_df["tickCount"] = display_df["tickCount"].astype(int)
+        display_df["fundingRate"] = (display_df["fundingRate"] * 100).round(4)  # Convert to percentage
+        display_df["openInterest"] = (display_df["openInterest"] / 1_000_000).round(1)  # Convert to millions
+        
         # Rename columns for display
         display_df.columns = [
-            "Symbol", "Price", "1H %", "24H %", "Volume (M)", "High", "Low", "Signals"
+            "Symbol", "Price", "1H %", "24H %", "Volume (M)", 
+            "Tick Count", "Funding %", "OI (M)", "Signals"
         ]
         
         # Display the data
@@ -235,7 +368,7 @@ def main():
         
         # Summary statistics
         st.subheader("📊 Summary Statistics")
-        col1, col2, col3, col4 = st.columns(4)
+        col1, col2, col3, col4, col5 = st.columns(5)
         
         with col1:
             gainers = len(df[df["priceChangePercent"] > 0])
@@ -252,6 +385,24 @@ def main():
         with col4:
             volatile = len(df[abs(df["priceChangePercent"]) > 10])
             st.metric("⚠️ High Volatility", volatile)
+            
+        with col5:
+            tick_spikes = len(df[df["signals"].str.contains("⚡ Tick Spike", na=False)])
+            st.metric("⚡ Tick Spikes", tick_spikes)
+            
+        # Add Orion-specific metrics
+        col6, col7, col8 = st.columns(3)
+        with col6:
+            avg_funding = df["fundingRate"].mean() * 100
+            st.metric("💰 Avg Funding %", f"{avg_funding:.4f}")
+        
+        with col7:
+            total_oi = df["openInterest"].sum() / 1_000_000
+            st.metric("📊 Total OI (M)", f"{total_oi:.1f}")
+        
+        with col8:
+            total_ticks = df["tickCount"].sum()
+            st.metric("🔢 Total Ticks", f"{total_ticks:,}")
         
     else:
         st.warning("No market data available. Please check your connection.")
@@ -262,10 +413,14 @@ def main():
         """
         **About JumpTrader:**
         - Real-time Binance perpetual futures data
+        - WebSocket-powered live trade ticks
+        - Orion Terminal CLI integration
         - AI-powered signal detection
         - Volume spike alerts
         - Momentum pattern recognition
         - Range break detection
+        - Micro-spike detection from real-time ticks
+        - Funding rate and open interest tracking
         """
     )
 

@@ -1,0 +1,84 @@
+#!/bin/bash
+
+# Placeholder Orion Terminal CLI for testing
+# Replace this with the actual Orion CLI binary
+
+case "$1" in
+    "--version")
+        echo "Orion Terminal CLI v1.0.0"
+        exit 0
+        ;;
+    "market")
+        if [ "$2" = "perpetuals" ]; then
+            # Simulate Orion CLI JSON output for top 10 perpetuals
+            cat << 'EOF'
+[
+  {
+    "symbol": "BTCUSDT",
+    "tickCount": 15420,
+    "fundingRate": 0.0001,
+    "openInterest": 1250000000
+  },
+  {
+    "symbol": "ETHUSDT",
+    "tickCount": 12850,
+    "fundingRate": 0.0002,
+    "openInterest": 850000000
+  },
+  {
+    "symbol": "BNBUSDT",
+    "tickCount": 9850,
+    "fundingRate": 0.0003,
+    "openInterest": 450000000
+  },
+  {
+    "symbol": "ADAUSDT",
+    "tickCount": 7650,
+    "fundingRate": 0.0004,
+    "openInterest": 320000000
+  },
+  {
+    "symbol": "SOLUSDT",
+    "tickCount": 8920,
+    "fundingRate": 0.0005,
+    "openInterest": 280000000
+  },
+  {
+    "symbol": "DOTUSDT",
+    "tickCount": 6540,
+    "fundingRate": 0.0002,
+    "openInterest": 180000000
+  },
+  {
+    "symbol": "AVAXUSDT",
+    "tickCount": 5430,
+    "fundingRate": 0.0006,
+    "openInterest": 150000000
+  },
+  {
+    "symbol": "MATICUSDT",
+    "tickCount": 4320,
+    "fundingRate": 0.0003,
+    "openInterest": 120000000
+  },
+  {
+    "symbol": "LINKUSDT",
+    "tickCount": 3870,
+    "fundingRate": 0.0004,
+    "openInterest": 95000000
+  },
+  {
+    "symbol": "UNIUSDT",
+    "tickCount": 3450,
+    "fundingRate": 0.0002,
+    "openInterest": 85000000
+  }
+]
+EOF
+            exit 0
+        fi
+        ;;
+esac
+
+echo "Usage: cli [--version|market perpetuals --json]"
+exit 1 
