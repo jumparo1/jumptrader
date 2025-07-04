@@ -12,6 +12,7 @@ from clients.ws_client import WebSocketClient
 from clients.orion_cli import fetch_orion_data, test_orion_cli
 from clients.binance import get_btc_correlation
 from clients.coingecko import fetch_coingecko_data
+from signals.basic import compute_comprehensive_signals
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -233,20 +234,21 @@ def get_coingecko_snapshot(symbols):
         logger.error(f"Error fetching CoinGecko data: {e}")
         return {}
 
-def main():
-    # Header
-    st.title("🚀 JumpTrader - AI Trading Dashboard")
-    st.markdown("Real-time Binance Perpetuals with AI-Powered Signals")
-    st.info("⚡ **Optimized Mode**: Loading top 10 perpetual contracts for faster performance")
+def get_market_data(symbol_limit=10, spike_threshold=10):
+    """
+    Get market data for the specified number of symbols.
     
-    # Sidebar controls
-    st.sidebar.header("⚙️ Dashboard Controls")
-    
+    Args:
+        symbol_limit: Number of symbols to fetch
+        spike_threshold: Threshold for ratio spike detection
+        
+    Returns:
+        DataFrame with market data
+    """
     # Get symbols
     symbols = get_perpetual_symbols()
     if not symbols:
-        st.error("Failed to fetch symbols from Binance")
-        return
+        return pd.DataFrame()
     
     # Start WebSocket client for real-time ticks
     start_websocket_client(symbols)
@@ -256,95 +258,15 @@ def main():
     
     # Test and fetch Orion CLI data
     orion_available = test_orion_cli()
-    # Symbol limit control - optimized for top 10
-    symbol_limit = st.sidebar.slider(
-        "Number of symbols to display",
-        min_value=5,
-        max_value=min(50, len(symbols)),
-        value=10,
-        step=5
-    )
     symbols_to_fetch = symbols[:symbol_limit]
+    
     if orion_available:
         orion_data = get_orion_snapshot(symbols_to_fetch)
         st.session_state.orion_data = orion_data
         logger.info(f"Orion CLI data loaded: {len(orion_data)} symbols")
-        # Optionally, show a warning if any symbols are missing (all will be present, but some may be all-zero)
-        missing = [s for s, v in orion_data.items() if v["tickCount"] == 0 and v["fundingRate"] == 0.0 and v["openInterest"] == 0.0]
-        if missing:
-            st.warning(f"Orion CLI returned no data for: {missing}")
-            logger.warning(f"Orion CLI returned no data for: {missing}")
     else:
         st.session_state.orion_data = {}
         logger.warning("Orion CLI not available")
-    
-    # Auto-refresh control
-    st.sidebar.header("🔄 Auto-Refresh")
-    refresh_interval = st.sidebar.number_input(
-        "Refresh interval (seconds)",
-        min_value=10,
-        value=60,
-        step=5
-    )
-    
-    # Ratio spike detection settings
-    st.sidebar.header("📊 Ratio Spike Detection")
-    spike_threshold = st.sidebar.slider(
-        "Spike threshold (%)",
-        min_value=1,
-        max_value=50,
-        value=10,
-        step=1,
-        help="Minimum percentage change in Circ/FDV ratio to trigger a spike alert"
-    )
-    
-    st.sidebar.info("""
-    **Ratio Spike Alerts:**
-    - 🔺 **Green**: Circ/FDV ratio increased (more tokens circulating)
-    - 🔻 **Red**: Circ/FDV ratio decreased (fewer tokens circulating)
-    
-    **What it means:**
-    - **Token unlocks** (ratio increases)
-    - **New token emissions** (ratio decreases)
-    - **Market cap changes** vs. FDV
-    """)
-    
-    # Status indicators
-    col1, col2, col3, col4, col5 = st.columns(5)
-    
-    with col1:
-        st.metric("🔗 Connection", "✅ Connected")
-    
-    with col2:
-        st.metric("📊 Symbols Available", f"{symbol_limit}/{len(symbols)}")
-    
-    with col3:
-        st.metric("🕒 Last Update", datetime.now().strftime("%H:%M:%S"))
-    
-    with col4:
-        st.metric("⚡ Refresh Rate", f"{refresh_interval}s")
-        
-    with col5:
-        ws_status = "🟢 Active" if st.session_state.ws_started else "🔴 Inactive"
-        tick_count = len(st.session_state.ticks)
-        st.metric("📡 WebSocket", f"{ws_status} ({tick_count} ticks)")
-        
-    # Add Orion CLI status
-    col6, col7 = st.columns(2)
-    with col6:
-        orion_status = "🟢 Active" if st.session_state.get('orion_data', {}) else "🔴 Inactive"
-        orion_count = len(st.session_state.get('orion_data', {}))
-        st.metric("🔧 Orion CLI", f"{orion_status} ({orion_count} symbols)")
-    
-    # Main data section
-    st.header("📈 Market Data")
-    
-    # Progress bar for data fetching
-    progress_bar = st.progress(0)
-    status_text = st.empty()
-    
-    # Fetch data for selected symbols
-    status_text.text("Fetching market data...")
     
     # Fetch CoinGecko data
     coingecko = get_coingecko_snapshot(symbols[:symbol_limit])
@@ -354,14 +276,8 @@ def main():
     current_ratios = {}
     
     market_data = []
-    symbols_to_fetch = symbols[:symbol_limit]
     
     for i, symbol in enumerate(symbols_to_fetch):
-        # Update progress
-        progress = (i + 1) / len(symbols_to_fetch)
-        progress_bar.progress(progress)
-        status_text.text(f"Fetching data for {symbol}... ({i+1}/{len(symbols_to_fetch)})")
-        
         # Get ticker data
         ticker_data = get_24h_ticker_data(symbol)
         if ticker_data:
@@ -429,18 +345,8 @@ def main():
         # Minimal delay for faster loading with fewer symbols
         time.sleep(0.005)
     
-    progress_bar.progress(1.0)
-    status_text.text("Data loaded successfully!")
-    
     # Save current ratios for next comparison
     save_current_ratios(current_ratios)
-    
-    # Add CoinGecko status
-    col6, col7 = st.columns(2)
-    with col6:
-        cg_status = "🟢 Active" if coingecko else "🔴 Inactive"
-        cg_count = len(coingecko)
-        st.metric("🪙 CoinGecko", f"{cg_status} ({cg_count} symbols)")
     
     if market_data:
         # Convert to DataFrame
@@ -476,6 +382,91 @@ def main():
             "CG MCap (B)", "FDV (B)", "Circ/FDV %", "Ratio Spike", "Tick Count", "Funding %", "OI (M)", "Signals"
         ]
         
+        return display_df, df  # Return both formatted and raw dataframes
+    
+    return pd.DataFrame(), pd.DataFrame()
+
+def main():
+    # Header
+    st.title("🚀 JumpTrader - AI Trading Dashboard")
+    st.markdown("Real-time Binance Perpetuals with AI-Powered Signals")
+    
+    # Sidebar controls
+    st.sidebar.header("⚙️ Dashboard Controls")
+    
+    # Get symbols
+    symbols = get_perpetual_symbols()
+    if not symbols:
+        st.error("Failed to fetch symbols from Binance")
+        return
+    
+    # Symbol limit control
+    symbol_limit = st.sidebar.slider(
+        "Number of symbols to display",
+        min_value=5,
+        max_value=min(50, len(symbols)),
+        value=10,
+        step=5
+    )
+    
+    # Ratio spike detection settings
+    st.sidebar.header("📊 Ratio Spike Detection")
+    spike_threshold = st.sidebar.slider(
+        "Spike threshold (%)",
+        min_value=1,
+        max_value=50,
+        value=10,
+        step=1,
+        help="Minimum percentage change in Circ/FDV ratio to trigger a spike alert"
+    )
+    
+    st.sidebar.info("""
+    **Ratio Spike Alerts:**
+    - 🔺 **Green**: Circ/FDV ratio increased (more tokens circulating)
+    - 🔻 **Red**: Circ/FDV ratio decreased (fewer tokens circulating)
+    
+    **What it means:**
+    - **Token unlocks** (ratio increases)
+    - **New token emissions** (ratio decreases)
+    - **Market cap changes** vs. FDV
+    """)
+    
+    # Status indicators
+    col1, col2, col3, col4, col5 = st.columns(5)
+    
+    with col1:
+        st.metric("🔗 Connection", "✅ Connected")
+    
+    with col2:
+        st.metric("📊 Symbols Available", f"{symbol_limit}/{len(symbols)}")
+    
+    with col3:
+        st.metric("🕒 Last Update", datetime.now().strftime("%H:%M:%S"))
+        
+    with col4:
+        ws_status = "🟢 Active" if st.session_state.ws_started else "🔴 Inactive"
+        tick_count = len(st.session_state.ticks)
+        st.metric("📡 WebSocket", f"{ws_status} ({tick_count} ticks)")
+        
+    with col5:
+        orion_status = "🟢 Active" if st.session_state.get('orion_data', {}) else "🔴 Inactive"
+        orion_count = len(st.session_state.get('orion_data', {}))
+        st.metric("🔧 Orion CLI", f"{orion_status} ({orion_count} symbols)")
+    
+    # Fetch market data
+    with st.spinner("Fetching market data..."):
+        display_df, raw_df = get_market_data(symbol_limit, spike_threshold)
+    
+    if display_df.empty:
+        st.error("No market data available. Please check your connection.")
+        return
+    
+    # Create two tabs
+    main_tab, signal_tab = st.tabs(["📈 Main Dashboard", "🚨 Signal Dashboard"])
+    
+    with main_tab:
+        st.subheader("📈 Main Market Data")
+        
         # Style: color 1H % and highlight ratio spikes
         def highlight_spikes(val):
             if pd.isna(val) or val is None:
@@ -499,63 +490,122 @@ def main():
             "Circ/FDV %": "{:.1f}%"
         })
         
-        # Display the data
-        st.dataframe(
-            styled,
-            use_container_width=True,
-            height=600
-        )
+        st.dataframe(styled, use_container_width=True, height=600)
         
         # Summary statistics
         st.subheader("📊 Summary Statistics")
         col1, col2, col3, col4, col5 = st.columns(5)
         
         with col1:
-            gainers = len(df[df["priceChangePercent"] > 0])
+            gainers = len(raw_df[raw_df["priceChangePercent"] > 0])
             st.metric("📈 Gainers", gainers)
         
         with col2:
-            losers = len(df[df["priceChangePercent"] < 0])
+            losers = len(raw_df[raw_df["priceChangePercent"] < 0])
             st.metric("📉 Losers", losers)
         
         with col3:
-            avg_volume = df["quoteVolume"].mean() / 1_000_000
+            avg_volume = raw_df["quoteVolume"].mean() / 1_000_000
             st.metric("💰 Avg Volume (M)", f"{avg_volume:.1f}")
         
         with col4:
-            volatile = len(df[abs(df["priceChangePercent"]) > 10])
+            volatile = len(raw_df[abs(raw_df["priceChangePercent"]) > 10])
             st.metric("⚠️ High Volatility", volatile)
             
         with col5:
-            tick_spikes = len(df[df["signals"].str.contains("⚡ Tick Spike", na=False)])
+            tick_spikes = len(raw_df[raw_df["signals"].str.contains("⚡ Tick Spike", na=False)])
             st.metric("⚡ Tick Spikes", tick_spikes)
         
         # Add ratio spike metrics
-        col9, col10 = st.columns(2)
-        with col9:
-            ratio_spikes = len(df[df["ratio_spike"].notna()])
+        col6, col7 = st.columns(2)
+        with col6:
+            ratio_spikes = len(raw_df[raw_df["ratio_spike"].notna()])
             st.metric("📊 Ratio Spikes", ratio_spikes)
         
-        with col10:
-            avg_ratio = df["circ_fdv_ratio"].mean()
-            st.metric("💰 Avg Circ/FDV %", f"{avg_ratio:.1f}%")
-            
-        # Add Orion-specific metrics
-        col6, col7, col8 = st.columns(3)
-        with col6:
-            avg_funding = df["fundingRate"].mean() * 100
-            st.metric("💰 Avg Funding %", f"{avg_funding:.4f}")
-        
         with col7:
-            total_oi = df["openInterest"].sum() / 1_000_000
-            st.metric("📊 Total OI (M)", f"{total_oi:.1f}")
+            avg_ratio = raw_df["circ_fdv_ratio"].mean()
+            st.metric("💰 Avg Circ/FDV %", f"{avg_ratio:.1f}%")
+    
+    with signal_tab:
+        st.subheader("🚨 Signal Dashboard")
         
-        with col8:
-            total_ticks = df["tickCount"].sum()
-            st.metric("🔢 Total Ticks", f"{total_ticks:,}")
+        # Apply compute_comprehensive_signals to each row
+        signal_results = raw_df.apply(lambda row: compute_comprehensive_signals(row), axis=1)
         
-    else:
-        st.warning("No market data available. Please check your connection.")
+        # Convert list of dicts to DataFrame
+        signal_df = pd.DataFrame(list(signal_results))
+        
+        # Add a boolean column for whether any signals were detected
+        signal_df["has_signal"] = signal_df["count"] > 0
+        
+        # Merge with original data for context
+        merged = pd.concat([raw_df.reset_index(drop=True), signal_df], axis=1)
+        
+        # Filter for rows with signals
+        filtered = merged[merged["has_signal"] == True]
+        
+        if not filtered.empty:
+            # Format the filtered data for display
+            signal_display = filtered[[
+                "symbol", "lastPrice", "change_1h", "btc_corr", "priceChangePercent", 
+                "quoteVolume", "cg_market_cap", "cg_fdv", "circ_fdv_ratio", "ratio_spike", 
+                "tickCount", "fundingRate", "openInterest", "signal_string", "count"
+            ]].copy()
+            
+            # Format numbers
+            signal_display["lastPrice"] = signal_display["lastPrice"].round(4)
+            signal_display["change_1h"] = signal_display["change_1h"].round(2)
+            signal_display["btc_corr"] = signal_display["btc_corr"].round(2)
+            signal_display["priceChangePercent"] = signal_display["priceChangePercent"].round(2)
+            signal_display["quoteVolume"] = (signal_display["quoteVolume"] / 1_000_000).round(1)
+            signal_display["cg_market_cap"] = (signal_display["cg_market_cap"] / 1_000_000_000).round(2)
+            signal_display["cg_fdv"] = (signal_display["cg_fdv"] / 1_000_000_000).round(2)
+            signal_display["circ_fdv_ratio"] = (signal_display["circ_fdv_ratio"] * 100).round(1)
+            signal_display["tickCount"] = signal_display["tickCount"].astype(int)
+            signal_display["fundingRate"] = (signal_display["fundingRate"] * 100).round(4)
+            signal_display["openInterest"] = (signal_display["openInterest"] / 1_000_000).round(1)
+            
+            # Rename columns for display
+            signal_display.columns = [
+                "Symbol", "Price", "1H %", "BTC Corr", "24H %", "Volume (M)", 
+                "CG MCap (B)", "FDV (B)", "Circ/FDV %", "Ratio Spike", "Tick Count", 
+                "Funding %", "OI (M)", "AI Signals", "Signal Count"
+            ]
+            
+            # Style the signal dashboard
+            signal_styled = signal_display.style.applymap(
+                lambda v: "color: green;" if v > 0 else "color: red;",
+                subset=["1H %"]
+            ).applymap(
+                highlight_spikes,
+                subset=["Ratio Spike"]
+            ).format({
+                "BTC Corr": "{:.2f}",
+                "CG MCap (B)": "{:.2f}",
+                "FDV (B)": "{:.2f}",
+                "Circ/FDV %": "{:.1f}%",
+                "Signal Count": "{:.0f}"
+            })
+            
+            st.dataframe(signal_styled, use_container_width=True, height=600)
+            
+            # Signal summary
+            st.subheader("🚨 Signal Summary")
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                total_signals = filtered["count"].sum()
+                st.metric("🎯 Total Signals", total_signals)
+            
+            with col2:
+                avg_signals_per_symbol = filtered["count"].mean()
+                st.metric("📊 Avg Signals/Symbol", f"{avg_signals_per_symbol:.1f}")
+            
+            with col3:
+                signal_strength = "High" if avg_signals_per_symbol > 3 else "Medium" if avg_signals_per_symbol > 1 else "Low"
+                st.metric("⚡ Signal Strength", signal_strength)
+        else:
+            st.info("No signals detected in the current data. Try adjusting the symbol limit or check market conditions.")
     
     # Footer
     st.markdown("---")
