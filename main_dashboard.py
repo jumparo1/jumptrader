@@ -6,6 +6,8 @@ from datetime import datetime
 import logging
 import asyncio
 import threading
+import json
+import os
 from clients.ws_client import WebSocketClient
 from clients.orion_cli import fetch_orion_data, test_orion_cli
 from clients.binance import get_btc_correlation
@@ -32,6 +34,41 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
+# Ratio tracking configuration
+RATIO_CACHE_PATH = "data/ratio_cache.json"
+SPIKE_THRESHOLD = 10  # percent points for ratio spike detection
+
+# Load previous ratios if file exists
+def load_previous_ratios():
+    """Load previous Circ/FDV ratios from cache file."""
+    try:
+        if os.path.exists(RATIO_CACHE_PATH):
+            with open(RATIO_CACHE_PATH, "r") as f:
+                return json.load(f)
+    except Exception as e:
+        logger.error(f"Error loading ratio cache: {e}")
+    return {}
+
+def save_current_ratios(ratios):
+    """Save current Circ/FDV ratios to cache file."""
+    try:
+        os.makedirs(os.path.dirname(RATIO_CACHE_PATH), exist_ok=True)
+        with open(RATIO_CACHE_PATH, "w") as f:
+            json.dump(ratios, f, indent=2)
+    except Exception as e:
+        logger.error(f"Error saving ratio cache: {e}")
+
+def detect_ratio_spike(current_ratio, previous_ratio, threshold=SPIKE_THRESHOLD):
+    """Detect if there's a significant change in the Circ/FDV ratio."""
+    if previous_ratio is None or current_ratio == 0:
+        return None
+    
+    change = current_ratio - previous_ratio
+    if abs(change) >= threshold:
+        direction = "🔺" if change > 0 else "🔻"
+        return f"{direction} {change:+.1f}%"
+    return None
 
 # Binance API endpoints
 BINANCE_BASE_URL = "https://fapi.binance.com"
@@ -250,6 +287,28 @@ def main():
         step=5
     )
     
+    # Ratio spike detection settings
+    st.sidebar.header("📊 Ratio Spike Detection")
+    spike_threshold = st.sidebar.slider(
+        "Spike threshold (%)",
+        min_value=1,
+        max_value=50,
+        value=10,
+        step=1,
+        help="Minimum percentage change in Circ/FDV ratio to trigger a spike alert"
+    )
+    
+    st.sidebar.info("""
+    **Ratio Spike Alerts:**
+    - 🔺 **Green**: Circ/FDV ratio increased (more tokens circulating)
+    - 🔻 **Red**: Circ/FDV ratio decreased (fewer tokens circulating)
+    
+    **What it means:**
+    - **Token unlocks** (ratio increases)
+    - **New token emissions** (ratio decreases)
+    - **Market cap changes** vs. FDV
+    """)
+    
     # Status indicators
     col1, col2, col3, col4, col5 = st.columns(5)
     
@@ -289,6 +348,10 @@ def main():
     
     # Fetch CoinGecko data
     coingecko = get_coingecko_snapshot(symbols[:symbol_limit])
+    
+    # Load previous ratios for spike detection
+    previous_ratios = load_previous_ratios()
+    current_ratios = {}
     
     market_data = []
     symbols_to_fetch = symbols[:symbol_limit]
@@ -335,6 +398,13 @@ def main():
             # Calculate circulating market cap vs. FDV ratio
             ratio = (mcap / fdv) if fdv > 0 else 0.0
             
+            # Store current ratio for cache
+            current_ratios[symbol] = ratio
+            
+            # Detect ratio spike
+            prev_ratio = previous_ratios.get(symbol)
+            ratio_spike = detect_ratio_spike(ratio, prev_ratio, spike_threshold)
+            
             # Combine data
             row_data = {
                 **ticker_data,
@@ -347,7 +417,8 @@ def main():
                 "openInterest": open_interest,
                 "cg_market_cap": mcap,
                 "cg_fdv": fdv,
-                "circ_fdv_ratio": ratio
+                "circ_fdv_ratio": ratio,
+                "ratio_spike": ratio_spike
             }
             
             # Compute signals
@@ -360,6 +431,9 @@ def main():
     
     progress_bar.progress(1.0)
     status_text.text("Data loaded successfully!")
+    
+    # Save current ratios for next comparison
+    save_current_ratios(current_ratios)
     
     # Add CoinGecko status
     col6, col7 = st.columns(2)
@@ -378,7 +452,7 @@ def main():
         # Format display columns
         display_df = df[[
             "symbol", "lastPrice", "change_1h", "btc_corr", "priceChangePercent", 
-            "quoteVolume", "cg_market_cap", "cg_fdv", "circ_fdv_ratio", "tickCount", "fundingRate", "openInterest", "signals"
+            "quoteVolume", "cg_market_cap", "cg_fdv", "circ_fdv_ratio", "ratio_spike", "tickCount", "fundingRate", "openInterest", "signals"
         ]].copy()
         
         # Format numbers
@@ -399,13 +473,25 @@ def main():
         # Rename columns for display
         display_df.columns = [
             "Symbol", "Price", "1H %", "BTC Corr", "24H %", "Volume (M)", 
-            "CG MCap (B)", "FDV (B)", "Circ/FDV %", "Tick Count", "Funding %", "OI (M)", "Signals"
+            "CG MCap (B)", "FDV (B)", "Circ/FDV %", "Ratio Spike", "Tick Count", "Funding %", "OI (M)", "Signals"
         ]
         
-        # Style: color 1H %
+        # Style: color 1H % and highlight ratio spikes
+        def highlight_spikes(val):
+            if pd.isna(val) or val is None:
+                return ""
+            if "🔺" in str(val):
+                return "background-color: #d4edda; color: #155724; font-weight: bold;"
+            elif "🔻" in str(val):
+                return "background-color: #f8d7da; color: #721c24; font-weight: bold;"
+            return ""
+        
         styled = display_df.style.applymap(
             lambda v: "color: green;" if v > 0 else "color: red;",
             subset=["1H %"]
+        ).applymap(
+            highlight_spikes,
+            subset=["Ratio Spike"]
         ).format({
             "BTC Corr": "{:.2f}",
             "CG MCap (B)": "{:.2f}",
@@ -443,6 +529,16 @@ def main():
         with col5:
             tick_spikes = len(df[df["signals"].str.contains("⚡ Tick Spike", na=False)])
             st.metric("⚡ Tick Spikes", tick_spikes)
+        
+        # Add ratio spike metrics
+        col9, col10 = st.columns(2)
+        with col9:
+            ratio_spikes = len(df[df["ratio_spike"].notna()])
+            st.metric("📊 Ratio Spikes", ratio_spikes)
+        
+        with col10:
+            avg_ratio = df["circ_fdv_ratio"].mean()
+            st.metric("💰 Avg Circ/FDV %", f"{avg_ratio:.1f}%")
             
         # Add Orion-specific metrics
         col6, col7, col8 = st.columns(3)
