@@ -477,10 +477,10 @@ def main():
                 return "background-color: #f8d7da; color: #721c24; font-weight: bold;"
             return ""
         
-        styled = display_df.style.applymap(
+        styled = display_df.style.map(
             lambda v: "color: green;" if v > 0 else "color: red;",
             subset=["1H %"]
-        ).applymap(
+        ).map(
             highlight_spikes,
             subset=["Ratio Spike"]
         ).format({
@@ -545,61 +545,138 @@ def main():
         filtered = merged[merged["has_signal"] == True]
         
         if not filtered.empty:
-            # Format the filtered data for display
-            signal_display = filtered[[
+            # Get available columns and select the ones we want
+            available_columns = filtered.columns.tolist()
+            desired_columns = [
                 "symbol", "lastPrice", "change_1h", "btc_corr", "priceChangePercent", 
                 "quoteVolume", "cg_market_cap", "cg_fdv", "circ_fdv_ratio", "ratio_spike", 
                 "tickCount", "fundingRate", "openInterest", "signal_string", "count"
-            ]].copy()
-            
-            # Format numbers
-            signal_display["lastPrice"] = signal_display["lastPrice"].round(4)
-            signal_display["change_1h"] = signal_display["change_1h"].round(2)
-            signal_display["btc_corr"] = signal_display["btc_corr"].round(2)
-            signal_display["priceChangePercent"] = signal_display["priceChangePercent"].round(2)
-            signal_display["quoteVolume"] = (signal_display["quoteVolume"] / 1_000_000).round(1)
-            signal_display["cg_market_cap"] = (signal_display["cg_market_cap"] / 1_000_000_000).round(2)
-            signal_display["cg_fdv"] = (signal_display["cg_fdv"] / 1_000_000_000).round(2)
-            signal_display["circ_fdv_ratio"] = (signal_display["circ_fdv_ratio"] * 100).round(1)
-            signal_display["tickCount"] = signal_display["tickCount"].astype(int)
-            signal_display["fundingRate"] = (signal_display["fundingRate"] * 100).round(4)
-            signal_display["openInterest"] = (signal_display["openInterest"] / 1_000_000).round(1)
-            
-            # Rename columns for display
-            signal_display.columns = [
-                "Symbol", "Price", "1H %", "BTC Corr", "24H %", "Volume (M)", 
-                "CG MCap (B)", "FDV (B)", "Circ/FDV %", "Ratio Spike", "Tick Count", 
-                "Funding %", "OI (M)", "AI Signals", "Signal Count"
             ]
             
+            # Only select columns that exist
+            existing_columns = [col for col in desired_columns if col in available_columns]
+            signal_display = filtered[existing_columns].copy()
+            
+            # Format numbers for columns that exist
+            if "lastPrice" in signal_display.columns:
+                signal_display["lastPrice"] = signal_display["lastPrice"].round(4)
+            if "change_1h" in signal_display.columns:
+                signal_display["change_1h"] = signal_display["change_1h"].round(2)
+            if "btc_corr" in signal_display.columns:
+                signal_display["btc_corr"] = signal_display["btc_corr"].round(2)
+            if "priceChangePercent" in signal_display.columns:
+                signal_display["priceChangePercent"] = signal_display["priceChangePercent"].round(2)
+            if "quoteVolume" in signal_display.columns:
+                signal_display["quoteVolume"] = (signal_display["quoteVolume"] / 1_000_000).round(1)
+            if "cg_market_cap" in signal_display.columns:
+                signal_display["cg_market_cap"] = (signal_display["cg_market_cap"] / 1_000_000_000).round(2)
+            if "cg_fdv" in signal_display.columns:
+                signal_display["cg_fdv"] = (signal_display["cg_fdv"] / 1_000_000_000).round(2)
+            if "circ_fdv_ratio" in signal_display.columns:
+                signal_display["circ_fdv_ratio"] = (signal_display["circ_fdv_ratio"] * 100).round(1)
+            if "tickCount" in signal_display.columns:
+                signal_display["tickCount"] = signal_display["tickCount"].astype(int)
+            if "fundingRate" in signal_display.columns:
+                signal_display["fundingRate"] = (signal_display["fundingRate"] * 100).round(4)
+            if "openInterest" in signal_display.columns:
+                signal_display["openInterest"] = (signal_display["openInterest"] / 1_000_000).round(1)
+            
+            # Rename columns for display based on what's available
+            column_mapping = {
+                "symbol": "Symbol",
+                "lastPrice": "Price", 
+                "change_1h": "1H %",
+                "btc_corr": "BTC Corr",
+                "priceChangePercent": "24H %",
+                "quoteVolume": "Volume (M)",
+                "cg_market_cap": "CG MCap (B)",
+                "cg_fdv": "FDV (B)",
+                "circ_fdv_ratio": "Circ/FDV %",
+                "ratio_spike": "Ratio Spike",
+                "tickCount": "Tick Count",
+                "fundingRate": "Funding %",
+                "openInterest": "OI (M)",
+                "signal_string": "AI Signals",
+                "count": "Signal Count"
+            }
+            
+            # Only rename columns that exist
+            new_columns = []
+            for col in existing_columns:
+                new_columns.append(column_mapping.get(col, col))
+            
+            # ✅ Deduplicate columns
+            def deduplicate_columns(columns):
+                seen = {}
+                new_cols = []
+                for col in columns:
+                    if col not in seen:
+                        seen[col] = 0
+                        new_cols.append(col)
+                    else:
+                        seen[col] += 1
+                        new_cols.append(f"{col}.{seen[col]}")
+                return new_cols
+
+            signal_display.columns = deduplicate_columns(signal_display.columns.tolist())
+
+            # ⚠️ Skip renaming if mismatch persists
+            if len(signal_display.columns) != len(new_columns):
+                st.warning("⚠️ Mismatch between actual columns and expected names — skipping renaming for safety.")
+                st.write("Fixed column names (deduplicated):", signal_display.columns.tolist())
+            else:
+                signal_display.columns = new_columns
+            
             # Style the signal dashboard
-            signal_styled = signal_display.style.applymap(
-                lambda v: "color: green;" if v > 0 else "color: red;",
-                subset=["1H %"]
-            ).applymap(
-                highlight_spikes,
-                subset=["Ratio Spike"]
-            ).format({
-                "BTC Corr": "{:.2f}",
-                "CG MCap (B)": "{:.2f}",
-                "FDV (B)": "{:.2f}",
-                "Circ/FDV %": "{:.1f}%",
-                "Signal Count": "{:.0f}"
-            })
+            signal_styled = signal_display.style
+            
+            # Apply color styling to 1H % if it exists
+            if "1H %" in signal_display.columns:
+                signal_styled = signal_styled.map(
+                    lambda v: "color: green;" if v > 0 else "color: red;",
+                    subset=["1H %"]
+                )
+            
+            # Apply spike highlighting if Ratio Spike exists
+            if "Ratio Spike" in signal_display.columns:
+                signal_styled = signal_styled.map(
+                    highlight_spikes,
+                    subset=["Ratio Spike"]
+                )
+            
+            # Apply formatting for columns that exist
+            format_dict = {}
+            if "BTC Corr" in signal_display.columns:
+                format_dict["BTC Corr"] = "{:.2f}"
+            if "CG MCap (B)" in signal_display.columns:
+                format_dict["CG MCap (B)"] = "{:.2f}"
+            if "FDV (B)" in signal_display.columns:
+                format_dict["FDV (B)"] = "{:.2f}"
+            if "Circ/FDV %" in signal_display.columns:
+                format_dict["Circ/FDV %"] = "{:.1f}%"
+            if "Signal Count" in signal_display.columns:
+                format_dict["Signal Count"] = "{:.0f}"
+            
+            if format_dict:
+                signal_styled = signal_styled.format(format_dict)
             
             st.dataframe(signal_styled, use_container_width=True, height=600)
             
-            # Signal summary
+            # ✅ Signal Summary (Safe casting)
             st.subheader("🚨 Signal Summary")
+            
+            # Deduplicate columns to avoid Series issues
+            filtered = filtered.loc[:, ~filtered.columns.duplicated()]
+            
             col1, col2, col3 = st.columns(3)
             
             with col1:
-                total_signals = filtered["count"].sum()
+                total_signals = int(filtered['count'].sum()) if 'count' in filtered.columns else 0
                 st.metric("🎯 Total Signals", total_signals)
             
             with col2:
-                avg_signals_per_symbol = filtered["count"].mean()
-                st.metric("📊 Avg Signals/Symbol", f"{avg_signals_per_symbol:.1f}")
+                avg_signals_per_symbol = round(filtered['count'].mean(), 1) if 'count' in filtered.columns else 0.0
+                st.metric("📊 Avg Signals/Symbol", avg_signals_per_symbol)
             
             with col3:
                 signal_strength = "High" if avg_signals_per_symbol > 3 else "Medium" if avg_signals_per_symbol > 1 else "Low"
