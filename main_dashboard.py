@@ -9,6 +9,7 @@ import threading
 from clients.ws_client import WebSocketClient
 from clients.orion_cli import fetch_orion_data, test_orion_cli
 from clients.binance import get_btc_correlation
+from clients.coingecko import fetch_coingecko_data
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -187,6 +188,14 @@ def get_orion_snapshot(symbols=None):
         logger.error(f"Error fetching Orion data: {e}")
         return {}
 
+@st.cache_data(ttl=60)
+def get_coingecko_snapshot(symbols):
+    try:
+        return fetch_coingecko_data(symbols)
+    except Exception as e:
+        logger.error(f"Error fetching CoinGecko data: {e}")
+        return {}
+
 def main():
     # Header
     st.title("🚀 JumpTrader - AI Trading Dashboard")
@@ -278,6 +287,9 @@ def main():
     # Fetch data for selected symbols
     status_text.text("Fetching market data...")
     
+    # Fetch CoinGecko data
+    coingecko = get_coingecko_snapshot(symbols[:symbol_limit])
+    
     market_data = []
     symbols_to_fetch = symbols[:symbol_limit]
     
@@ -315,6 +327,14 @@ def main():
             # Get BTC correlation
             btc_corr = get_btc_correlation(symbol)
             
+            # Get CoinGecko data
+            cg = coingecko.get(symbol, {})
+            mcap = cg.get("market_cap", 0.0)
+            fdv = cg.get("fdv", 0.0)
+            
+            # Calculate circulating market cap vs. FDV ratio
+            ratio = (mcap / fdv) if fdv > 0 else 0.0
+            
             # Combine data
             row_data = {
                 **ticker_data,
@@ -324,7 +344,10 @@ def main():
                 "tick_volume": tick_volume,
                 "tickCount": tick_count,
                 "fundingRate": funding_rate,
-                "openInterest": open_interest
+                "openInterest": open_interest,
+                "cg_market_cap": mcap,
+                "cg_fdv": fdv,
+                "circ_fdv_ratio": ratio
             }
             
             # Compute signals
@@ -338,6 +361,13 @@ def main():
     progress_bar.progress(1.0)
     status_text.text("Data loaded successfully!")
     
+    # Add CoinGecko status
+    col6, col7 = st.columns(2)
+    with col6:
+        cg_status = "🟢 Active" if coingecko else "🔴 Inactive"
+        cg_count = len(coingecko)
+        st.metric("🪙 CoinGecko", f"{cg_status} ({cg_count} symbols)")
+    
     if market_data:
         # Convert to DataFrame
         df = pd.DataFrame(market_data)
@@ -348,7 +378,7 @@ def main():
         # Format display columns
         display_df = df[[
             "symbol", "lastPrice", "change_1h", "btc_corr", "priceChangePercent", 
-            "quoteVolume", "tickCount", "fundingRate", "openInterest", "signals"
+            "quoteVolume", "cg_market_cap", "cg_fdv", "circ_fdv_ratio", "tickCount", "fundingRate", "openInterest", "signals"
         ]].copy()
         
         # Format numbers
@@ -357,6 +387,9 @@ def main():
         display_df["btc_corr"] = display_df["btc_corr"].round(2)
         display_df["priceChangePercent"] = display_df["priceChangePercent"].round(2)
         display_df["quoteVolume"] = (display_df["quoteVolume"] / 1_000_000).round(1)  # Convert to millions
+        display_df["cg_market_cap"] = (display_df["cg_market_cap"] / 1_000_000_000).round(2)  # Convert to billions
+        display_df["cg_fdv"] = (display_df["cg_fdv"] / 1_000_000_000).round(2)  # Convert to billions
+        display_df["circ_fdv_ratio"] = (display_df["circ_fdv_ratio"] * 100).round(1)  # Convert to percentage
         
         # Format Orion data
         display_df["tickCount"] = display_df["tickCount"].astype(int)
@@ -366,7 +399,7 @@ def main():
         # Rename columns for display
         display_df.columns = [
             "Symbol", "Price", "1H %", "BTC Corr", "24H %", "Volume (M)", 
-            "Tick Count", "Funding %", "OI (M)", "Signals"
+            "CG MCap (B)", "FDV (B)", "Circ/FDV %", "Tick Count", "Funding %", "OI (M)", "Signals"
         ]
         
         # Style: color 1H %
@@ -374,7 +407,10 @@ def main():
             lambda v: "color: green;" if v > 0 else "color: red;",
             subset=["1H %"]
         ).format({
-            "BTC Corr": "{:.2f}"
+            "BTC Corr": "{:.2f}",
+            "CG MCap (B)": "{:.2f}",
+            "FDV (B)": "{:.2f}",
+            "Circ/FDV %": "{:.1f}%"
         })
         
         # Display the data
