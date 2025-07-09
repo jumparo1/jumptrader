@@ -177,8 +177,8 @@ def start_websocket_client(symbols):
     """Start WebSocket client in a separate thread."""
     if not st.session_state.ws_started:
         try:
-            # Focus on top 10 symbols for faster loading
-            ws_symbols = symbols[:10]  # top 10 symbols only
+            # Use the provided symbols (already sorted by tickCount)
+            ws_symbols = symbols[:10]  # Limit to top 10 for WebSocket performance
             # Create queue in the thread with event loop
             if st.session_state.tick_queue is None:
                 st.session_state.tick_queue = asyncio.Queue()
@@ -250,26 +250,49 @@ def get_market_data(symbol_limit=10, spike_threshold=10):
     if not symbols:
         return pd.DataFrame()
     
-    # Start WebSocket client for real-time ticks
-    start_websocket_client(symbols)
+    # Test and fetch Orion CLI data for all symbols first
+    orion_available = test_orion_cli()
+    
+    if orion_available:
+        # Fetch Orion data for all symbols to get tickCount for sorting
+        orion_data = get_orion_snapshot(symbols)
+        st.session_state.orion_data = orion_data
+        logger.info(f"Orion CLI data loaded: {len(orion_data)} symbols")
+        
+        # Filter symbols to only those with Orion data and tickCount > 0
+        symbols_with_orion = [
+            s for s in symbols 
+            if s in orion_data and orion_data[s].get("tickCount", 0) > 0
+        ]
+        
+        # Sort symbols by tickCount from Orion data, descending
+        symbols_sorted = sorted(
+            symbols_with_orion,
+            key=lambda s: orion_data[s].get("tickCount", 0),
+            reverse=True
+        )
+        
+        # Select top N symbols by tickCount
+        top_symbols = symbols_sorted[:symbol_limit]
+        logger.info(f"Selected top {len(top_symbols)} symbols by tickCount from {len(symbols_with_orion)} available")
+        
+        # Log the selected symbols and their tickCounts for debugging
+        for i, symbol in enumerate(top_symbols):
+            tick_count = orion_data[symbol].get("tickCount", 0)
+            logger.info(f"  {i+1}. {symbol}: {tick_count} ticks")
+    else:
+        st.session_state.orion_data = {}
+        logger.warning("Orion CLI not available, using first N symbols")
+        top_symbols = symbols[:symbol_limit]
+    
+    # Start WebSocket client for real-time ticks with top symbols
+    start_websocket_client(top_symbols)
     
     # Consume any available ticks
     consume_ticks()
     
-    # Test and fetch Orion CLI data
-    orion_available = test_orion_cli()
-    symbols_to_fetch = symbols[:symbol_limit]
-    
-    if orion_available:
-        orion_data = get_orion_snapshot(symbols_to_fetch)
-        st.session_state.orion_data = orion_data
-        logger.info(f"Orion CLI data loaded: {len(orion_data)} symbols")
-    else:
-        st.session_state.orion_data = {}
-        logger.warning("Orion CLI not available")
-    
-    # Fetch CoinGecko data
-    coingecko = get_coingecko_snapshot(symbols[:symbol_limit])
+    # Fetch CoinGecko data for the selected symbols
+    coingecko = get_coingecko_snapshot(top_symbols)
     
     # Load previous ratios for spike detection
     previous_ratios = load_previous_ratios()
@@ -277,7 +300,7 @@ def get_market_data(symbol_limit=10, spike_threshold=10):
     
     market_data = []
     
-    for i, symbol in enumerate(symbols_to_fetch):
+    for i, symbol in enumerate(top_symbols):
         # Get ticker data
         ticker_data = get_24h_ticker_data(symbol)
         if ticker_data:
@@ -352,8 +375,7 @@ def get_market_data(symbol_limit=10, spike_threshold=10):
         # Convert to DataFrame
         df = pd.DataFrame(market_data)
         
-        # Sort by 24h change
-        df = df.sort_values("priceChangePercent", ascending=False)
+        # Keep order by tickCount (already sorted in top_symbols)
         
         # Format display columns
         display_df = df[[
@@ -377,10 +399,20 @@ def get_market_data(symbol_limit=10, spike_threshold=10):
         display_df["openInterest"] = (display_df["openInterest"] / 1_000_000).round(1)  # Convert to millions
         
         # Rename columns for display
-        display_df.columns = [
-            "Symbol", "Price", "1H %", "BTC Corr", "24H %", "Volume (M)", 
-            "CG MCap (B)", "FDV (B)", "Circ/FDV %", "Ratio Spike", "Tick Count", "Funding %", "OI (M)", "Signals"
-        ]
+        display_df = display_df.rename(columns={
+            "change_1h":         "chg1h (%)",
+            "priceChangePercent": "chg24h (%)",
+            "quoteVolume":       "vol24h",
+            "cg_market_cap":     "CG MCAP (B)",
+            "cg_fdv":            "FDV (B)",
+            "circ_fdv_ratio":    "Circ/FDV (%)",
+            "ratio_spike":       "Ratio Spike",
+            "signals":           "Signal"
+        })
+        
+        # Drop the duplicate count.1 column if it exists
+        if "count.1" in display_df.columns:
+            display_df = display_df.drop(columns=["count.1"])
         
         return display_df, df  # Return both formatted and raw dataframes
     
@@ -479,52 +511,18 @@ def main():
         
         styled = display_df.style.map(
             lambda v: "color: green;" if v > 0 else "color: red;",
-            subset=["1H %"]
+            subset=["chg1h (%)"]
         ).map(
             highlight_spikes,
             subset=["Ratio Spike"]
         ).format({
             "BTC Corr": "{:.2f}",
-            "CG MCap (B)": "{:.2f}",
+            "CG MCAP (B)": "{:.2f}",
             "FDV (B)": "{:.2f}",
-            "Circ/FDV %": "{:.1f}%"
+            "Circ/FDV (%)": "{:.1f}%"
         })
         
         st.dataframe(styled, use_container_width=True, height=600)
-        
-        # Summary statistics
-        st.subheader("📊 Summary Statistics")
-        col1, col2, col3, col4, col5 = st.columns(5)
-        
-        with col1:
-            gainers = len(raw_df[raw_df["priceChangePercent"] > 0])
-            st.metric("📈 Gainers", gainers)
-        
-        with col2:
-            losers = len(raw_df[raw_df["priceChangePercent"] < 0])
-            st.metric("📉 Losers", losers)
-        
-        with col3:
-            avg_volume = raw_df["quoteVolume"].mean() / 1_000_000
-            st.metric("💰 Avg Volume (M)", f"{avg_volume:.1f}")
-        
-        with col4:
-            volatile = len(raw_df[abs(raw_df["priceChangePercent"]) > 10])
-            st.metric("⚠️ High Volatility", volatile)
-            
-        with col5:
-            tick_spikes = len(raw_df[raw_df["signals"].str.contains("⚡ Tick Spike", na=False)])
-            st.metric("⚡ Tick Spikes", tick_spikes)
-        
-        # Add ratio spike metrics
-        col6, col7 = st.columns(2)
-        with col6:
-            ratio_spikes = len(raw_df[raw_df["ratio_spike"].notna()])
-            st.metric("📊 Ratio Spikes", ratio_spikes)
-        
-        with col7:
-            avg_ratio = raw_df["circ_fdv_ratio"].mean()
-            st.metric("💰 Avg Circ/FDV %", f"{avg_ratio:.1f}%")
     
     with signal_tab:
         st.subheader("🚨 Signal Dashboard")
@@ -557,6 +555,24 @@ def main():
             existing_columns = [col for col in desired_columns if col in available_columns]
             signal_display = filtered[existing_columns].copy()
             
+            # Apply direct DataFrame renaming
+            signal_display = signal_display.rename(columns={
+                "change_1h":           "1H %",
+                "btc_corr":            "BTC Corr",
+                "priceChangePercent":  "24H %",
+                "quoteVolume":         "Vol 24H",
+                "cg_market_cap":       "CG MCAP (B)",
+                "cg_fdv":              "FDV (B)",
+                "circ_fdv_ratio":      "Circ/FDV %",
+                "ratio_spike":         "Ratio Spike",
+                "signal_string":       "Signals",
+                "count":               "Signal Count"
+            })
+            
+            # Drop the duplicate count.1 column if it exists
+            if "count.1" in signal_display.columns:
+                signal_display = signal_display.drop(columns=["count.1"])
+            
             # Format numbers for columns that exist
             if "lastPrice" in signal_display.columns:
                 signal_display["lastPrice"] = signal_display["lastPrice"].round(4)
@@ -581,31 +597,7 @@ def main():
             if "openInterest" in signal_display.columns:
                 signal_display["openInterest"] = (signal_display["openInterest"] / 1_000_000).round(1)
             
-            # Rename columns for display based on what's available
-            column_mapping = {
-                "symbol": "Symbol",
-                "lastPrice": "Price", 
-                "change_1h": "1H %",
-                "btc_corr": "BTC Corr",
-                "priceChangePercent": "24H %",
-                "quoteVolume": "Volume (M)",
-                "cg_market_cap": "CG MCap (B)",
-                "cg_fdv": "FDV (B)",
-                "circ_fdv_ratio": "Circ/FDV %",
-                "ratio_spike": "Ratio Spike",
-                "tickCount": "Tick Count",
-                "fundingRate": "Funding %",
-                "openInterest": "OI (M)",
-                "signal_string": "AI Signals",
-                "count": "Signal Count"
-            }
-            
-            # Only rename columns that exist
-            new_columns = []
-            for col in existing_columns:
-                new_columns.append(column_mapping.get(col, col))
-            
-            # ✅ Deduplicate columns
+            # ✅ Deduplicate columns if needed
             def deduplicate_columns(columns):
                 seen = {}
                 new_cols = []
@@ -618,14 +610,9 @@ def main():
                         new_cols.append(f"{col}.{seen[col]}")
                 return new_cols
 
-            signal_display.columns = deduplicate_columns(signal_display.columns.tolist())
-
-            # ⚠️ Skip renaming if mismatch persists
-            if len(signal_display.columns) != len(new_columns):
-                st.warning("⚠️ Mismatch between actual columns and expected names — skipping renaming for safety.")
-                st.write("Fixed column names (deduplicated):", signal_display.columns.tolist())
-            else:
-                signal_display.columns = new_columns
+            # Check for and handle duplicate columns
+            if len(signal_display.columns) != len(set(signal_display.columns)):
+                signal_display.columns = deduplicate_columns(signal_display.columns.tolist())
             
             # Style the signal dashboard
             signal_styled = signal_display.style
@@ -648,8 +635,8 @@ def main():
             format_dict = {}
             if "BTC Corr" in signal_display.columns:
                 format_dict["BTC Corr"] = "{:.2f}"
-            if "CG MCap (B)" in signal_display.columns:
-                format_dict["CG MCap (B)"] = "{:.2f}"
+            if "CG MCAP (B)" in signal_display.columns:
+                format_dict["CG MCAP (B)"] = "{:.2f}"
             if "FDV (B)" in signal_display.columns:
                 format_dict["FDV (B)"] = "{:.2f}"
             if "Circ/FDV %" in signal_display.columns:
@@ -661,26 +648,6 @@ def main():
                 signal_styled = signal_styled.format(format_dict)
             
             st.dataframe(signal_styled, use_container_width=True, height=600)
-            
-            # ✅ Signal Summary (Safe casting)
-            st.subheader("🚨 Signal Summary")
-            
-            # Deduplicate columns to avoid Series issues
-            filtered = filtered.loc[:, ~filtered.columns.duplicated()]
-            
-            col1, col2, col3 = st.columns(3)
-            
-            with col1:
-                total_signals = int(filtered['count'].sum()) if 'count' in filtered.columns else 0
-                st.metric("🎯 Total Signals", total_signals)
-            
-            with col2:
-                avg_signals_per_symbol = round(filtered['count'].mean(), 1) if 'count' in filtered.columns else 0.0
-                st.metric("📊 Avg Signals/Symbol", avg_signals_per_symbol)
-            
-            with col3:
-                signal_strength = "High" if avg_signals_per_symbol > 3 else "Medium" if avg_signals_per_symbol > 1 else "Low"
-                st.metric("⚡ Signal Strength", signal_strength)
         else:
             st.info("No signals detected in the current data. Try adjusting the symbol limit or check market conditions.")
     

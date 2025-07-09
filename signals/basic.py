@@ -147,6 +147,35 @@ def detect_near_extremes(current_price: float, high_price: float, low_price: flo
         return False, "middle"
 
 
+def compute_basic_signals(chg1h: float, chg24h: float, vol24h: float) -> list:
+    """
+    Compute basic trading signals based on 1h change, 24h change, and 24h volume.
+    
+    Args:
+        chg1h: 1-hour price change percentage
+        chg24h: 24-hour price change percentage  
+        vol24h: 24-hour volume
+        
+    Returns:
+        List of signal tag strings
+    """
+    signals = []
+    
+    # Volume spike detection (1B volume threshold)
+    if vol24h >= 1e9:
+        signals.append("🔥 Volume Spike")
+    
+    # 1H Gainer detection (5% threshold)
+    if chg1h > 5:
+        signals.append("📈 1H Gainer")
+    
+    # Volatile detection (10% 24h change threshold)
+    if abs(chg24h) > 10:
+        signals.append("⚠️ Volatile")
+    
+    return signals
+
+
 def compute_comprehensive_signals(row_data: Dict) -> Dict[str, any]:
     """
     Compute all basic signals for a given row of market data.

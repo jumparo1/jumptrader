@@ -20,6 +20,7 @@ from signals.basic import (
     detect_volatility,
     detect_tick_spike,
     detect_near_extremes,
+    compute_basic_signals,
     compute_comprehensive_signals,
     get_signal_strength
 )
@@ -339,6 +340,22 @@ class TestSignalStrength:
         signal_details = {"count": 10}
         strength = get_signal_strength(signal_details)
         assert strength == "critical"
+
+
+class TestComputeBasicSignals:
+    """Test the compute_basic_signals function."""
+    
+    @pytest.mark.parametrize("chg1h,chg24h,vol24h,expected", [
+        (1, 0, 1e9, ["🔥 Volume Spike"]),  
+        (6, 0, 1e7, ["📈 1H Gainer"]),      
+        (0, 12, 1e7, ["⚠️ Volatile"]),     
+        (10, 15, 1e9, ["🔥 Volume Spike","📈 1H Gainer","⚠️ Volatile"]),  
+        (0, 0, 1e6, []),                    
+    ])
+    def test_compute_basic_signals(self, chg1h, chg24h, vol24h, expected):
+        """Test compute_basic_signals with various input combinations."""
+        tags = compute_basic_signals(chg1h, chg24h, vol24h)
+        assert set(tags) == set(expected)
 
 
 if __name__ == "__main__":
