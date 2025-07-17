@@ -14,6 +14,11 @@ from clients.binance import get_btc_correlation
 from clients.coingecko import fetch_coingecko_data
 from signals.basic import compute_comprehensive_signals
 
+# Add chatbot imports
+import sys
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+from mentorship.embed_store import ingest_transcript, query_store, get_store_stats, clear_store
+
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -507,8 +512,9 @@ def main():
         st.error("No market data available. Please check your connection.")
         return
     
-    # Create two tabs
-    main_tab, signal_tab = st.tabs(["📈 Main Dashboard", "🚨 Signal Dashboard"])
+    # Create three tabs
+    tabs = st.tabs(["📈 Main Dashboard", "🚨 Signal Dashboard", "🔥 Chat Agent"])
+    main_tab, signal_tab, chat_tab = tabs
     
     with main_tab:
         st.subheader("📈 Main Market Data")
@@ -665,6 +671,166 @@ def main():
         else:
             st.info("No signals detected in the current data. Try adjusting the symbol limit or check market conditions.")
     
+    with chat_tab:
+        st.header("🔥 AI Mentor Chat Agent")
+        st.markdown("**Spicy** is your AI mentor trained on your trading lessons. Ask anything about trading strategies, risk management, or market analysis!")
+        
+        # Initialize session state for chat
+        if "chat_history" not in st.session_state:
+            st.session_state.chat_history = []
+        
+        if "spicy_personality" not in st.session_state:
+            st.session_state.spicy_personality = {
+                "name": "Spicy",
+                "style": "Direct, experienced, and slightly edgy",
+                "greeting": "Hey trader! I'm Spicy, your AI mentor. I've learned from your lessons and I'm here to help you level up your trading game. What's on your mind?"
+            }
+        
+        # Auto-load sample transcript on first run
+        if "transcript_loaded" not in st.session_state:
+            try:
+                transcript_path = "sample_transcript.txt"
+                if os.path.exists(transcript_path):
+                    with open(transcript_path, 'r', encoding='utf-8') as f:
+                        transcript_text = f.read()
+                    
+                    if ingest_transcript(transcript_text, "sample_lessons"):
+                        st.session_state.transcript_loaded = True
+                        st.success("✅ Loaded lessons into Spicy's memory!")
+                    else:
+                        st.warning("⚠️ Failed to load sample transcript")
+                else:
+                    st.warning("⚠️ sample_transcript.txt not found")
+            except Exception as e:
+                st.error(f"Error loading transcript: {e}")
+            st.session_state.transcript_loaded = True
+        
+        # Sidebar for Spicy's info
+        with st.sidebar:
+            st.header("🔥 Spicy's Corner")
+            st.markdown("### 🤖 **Spicy** - AI Trading Mentor")
+            st.markdown("*Direct, experienced, and slightly edgy*")
+            
+            # Knowledge base stats
+            stats = get_store_stats()
+            st.metric("📚 Lessons Learned", stats["total_documents"])
+            st.metric("🧠 Knowledge Chunks", stats["total_chunks"])
+            
+            if stats["total_documents"] > 0:
+                st.success("✅ Spicy is ready to help!")
+            else:
+                st.warning("⚠️ Spicy needs to learn first!")
+            
+            st.markdown("---")
+            
+            # Quick actions
+            if st.button("🗑️ Clear Spicy's Memory", type="secondary"):
+                if clear_store():
+                    st.success("Spicy's memory cleared!")
+                    st.rerun()
+                else:
+                    st.error("Failed to clear memory")
+        
+        # Welcome message if no chat history
+        if not st.session_state.chat_history:
+            st.info(f"🔥 **{st.session_state.spicy_personality['greeting']}**")
+        
+        # Display chat history
+        if st.session_state.chat_history:
+            st.markdown("### 📝 Conversation History")
+            
+            for i, (question, answer, excerpts) in enumerate(st.session_state.chat_history):
+                # User message
+                with st.container():
+                    col1, col2 = st.columns([1, 20])
+                    with col1:
+                        st.markdown("👤")
+                    with col2:
+                        st.markdown(f"**You:** {question}")
+                
+                # Spicy's response
+                with st.container():
+                    col1, col2 = st.columns([1, 20])
+                    with col1:
+                        st.markdown("🔥")
+                    with col2:
+                        st.markdown(f"**Spicy:** {answer}")
+                        
+                        # Show relevant excerpts in expandable section
+                        if excerpts:
+                            with st.expander(f"📖 View {len(excerpts)} relevant lesson excerpts", expanded=False):
+                                for j, excerpt in enumerate(excerpts, 1):
+                                    st.markdown(f"**{j}.** {excerpt[:300]}...")
+                                    st.markdown("---")
+                
+                st.markdown("---")
+        
+        # Quick question buttons
+        st.markdown("**Quick Questions:**")
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            if st.button("🎯 Best Entry Strategies", key="q1"):
+                selected_question = "What are the best entry strategies for mean reversion trades?"
+                st.session_state.selected_question = selected_question
+                st.rerun()
+        
+        with col2:
+            if st.button("⚠️ Risk Management", key="q2"):
+                selected_question = "What are the key risk management principles I should follow?"
+                st.session_state.selected_question = selected_question
+                st.rerun()
+        
+        with col3:
+            if st.button("📊 Market Context", key="q3"):
+                selected_question = "How should I analyze market context before entering trades?"
+                st.session_state.selected_question = selected_question
+                st.rerun()
+        
+        # Chat input
+        if "selected_question" in st.session_state:
+            default_question = st.session_state.selected_question
+            del st.session_state.selected_question
+        else:
+            default_question = ""
+        
+        spicy_question = st.text_input(
+            "What do you want to ask Spicy?",
+            value=default_question,
+            key="spicy_question"
+        )
+        
+        # Send button
+        col1, col2 = st.columns([1, 4])
+        with col1:
+            if st.button("🔥 Ask Spicy", type="primary"):
+                if not spicy_question.strip():
+                    st.warning("Please type a question before sending.")
+                else:
+                    try:
+                        with st.spinner("🔥 Spicy is thinking..."):
+                            excerpts = query_store(spicy_question, k=3)
+                        
+                        if excerpts:
+                            answer = f"Great question! Based on your lessons, here's what I know:\n\n"
+                            for i, excerpt in enumerate(excerpts, 1):
+                                clean_excerpt = excerpt.replace('\n', ' ').strip()
+                                answer += f"**{i}.** {clean_excerpt[:250]}...\n\n"
+                            answer += "\n🔥 **Spicy's Take:** Remember, context is everything. Always check market conditions before applying these strategies!"
+                            
+                            st.session_state.chat_history.append((spicy_question, answer, excerpts))
+                            st.success("✅ Spicy responded!")
+                            st.rerun()
+                        else:
+                            st.info("🤔 Spicy doesn't have enough knowledge about that yet. Try uploading more lessons or rephrasing your question.")
+                    except Exception as e:
+                        st.error(f"Error: {e}")
+        
+        with col2:
+            if st.button("🗑️ Clear Chat", type="secondary"):
+                st.session_state.chat_history = []
+                st.rerun()
+    
     # Footer
     st.markdown("---")
     st.markdown(
@@ -679,6 +845,7 @@ def main():
         - Range break detection
         - Micro-spike detection from real-time ticks
         - Funding rate and open interest tracking
+        - **🔥 AI Mentor Chat Agent trained on trading lessons**
         """
     )
 
