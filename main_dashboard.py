@@ -301,10 +301,18 @@ def get_market_data(symbol_limit=10, spike_threshold=10):
     market_data = []
     
     for i, symbol in enumerate(top_symbols):
-        # Get ticker data
-        ticker_data = get_24h_ticker_data(symbol)
-        if ticker_data:
+        logger.info(f"Processing symbol {i+1}/{len(top_symbols)}: {symbol}")
+        
+        try:
+            # Get ticker data
+            logger.info(f"Fetching ticker data for {symbol}")
+            ticker_data = get_24h_ticker_data(symbol)
+            if not ticker_data:
+                logger.warning(f"No ticker data for {symbol}, skipping")
+                continue
+                
             # Get 1h change
+            logger.info(f"Fetching 1h change for {symbol}")
             change_1h = get_klines_data(symbol, "1h", 2)
             
             # Get real-time tick data
@@ -327,6 +335,7 @@ def get_market_data(symbol_limit=10, spike_threshold=10):
             open_interest = float(orion_info.get("openInterest", 0))
             
             # Get BTC correlation
+            logger.info(f"Fetching BTC correlation for {symbol}")
             btc_corr = get_btc_correlation(symbol)
             
             # Get CoinGecko data
@@ -364,9 +373,14 @@ def get_market_data(symbol_limit=10, spike_threshold=10):
             row_data["signals"] = compute_signals(row_data)
             
             market_data.append(row_data)
+            logger.info(f"Successfully processed {symbol}")
+            
+        except Exception as e:
+            logger.error(f"Error processing {symbol}: {e}")
+            continue
         
         # Minimal delay for faster loading with fewer symbols
-        time.sleep(0.005)
+        time.sleep(0.01)
     
     # Save current ratios for next comparison
     save_current_ratios(current_ratios)
@@ -435,10 +449,10 @@ def main():
     # Symbol limit control
     symbol_limit = st.sidebar.slider(
         "Number of symbols to display",
-        min_value=5,
-        max_value=min(50, len(symbols)),
-        value=10,
-        step=5
+        min_value=3,
+        max_value=min(20, len(symbols)),
+        value=5,
+        step=1
     )
     
     # Ratio spike detection settings
