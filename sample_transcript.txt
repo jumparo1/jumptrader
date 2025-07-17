@@ -489,4 +489,4 @@ Target = any origin wick base; stop management is flexible due to high margin of
 
 Practice spotting these on your watchlist during low-vol days to capture easy mean-reversions.
 
-Lesson 7
+Lesson
