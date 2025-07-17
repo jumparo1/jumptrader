@@ -26,7 +26,7 @@ class OrionClient:
         """Get comprehensive market data for a symbol from Orion."""
         try:
             endpoint = f"{self.base_url}/v1/market-data/{symbol}"
-            response = self.session.get(endpoint)
+            response = self.session.get(endpoint, timeout=10)
             response.raise_for_status()
             
             return response.json()
@@ -54,7 +54,7 @@ class OrionClient:
         """Get liquidity pool information for a symbol."""
         try:
             endpoint = f"{self.base_url}/v1/liquidity-pools/{symbol}"
-            response = self.session.get(endpoint)
+            response = self.session.get(endpoint, timeout=10)
             response.raise_for_status()
             
             return response.json()
@@ -70,7 +70,7 @@ class OrionClient:
         """Get all available trading pairs from Orion."""
         try:
             endpoint = f"{self.base_url}/v1/trading-pairs"
-            response = self.session.get(endpoint)
+            response = self.session.get(endpoint, timeout=10)
             response.raise_for_status()
             
             return response.json()
@@ -87,7 +87,7 @@ class OrionClient:
         try:
             endpoint = f"{self.base_url}/v1/order-book/{symbol}"
             params = {"depth": depth}
-            response = self.session.get(endpoint, params=params)
+            response = self.session.get(endpoint, params=params, timeout=10)
             response.raise_for_status()
             
             return response.json()
@@ -104,7 +104,7 @@ class OrionClient:
         try:
             endpoint = f"{self.base_url}/v1/recent-trades/{symbol}"
             params = {"limit": limit}
-            response = self.session.get(endpoint, params=params)
+            response = self.session.get(endpoint, params=params, timeout=10)
             response.raise_for_status()
             
             return response.json()

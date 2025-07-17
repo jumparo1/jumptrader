@@ -86,7 +86,7 @@ def fetch_coingecko_data(symbols: list[str]) -> dict[str, dict]:
         logger.info(f"Parameters: {params}")
         logger.info(f"Headers: {headers}")
         
-        response = requests.get(url, headers=headers, params=params)
+        response = requests.get(url, headers=headers, params=params, timeout=10)
         logger.info(f"Response status: {response.status_code}")
         
         if response.status_code != 200:

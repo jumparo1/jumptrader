@@ -6,12 +6,12 @@ FUTURES_FUNDING_RATE = "https://fapi.binance.com/fapi/v1/fundingRate"
 KLINES = "https://fapi.binance.com/fapi/v1/klines"
 
 def get_open_interest(symbol: str) -> float:
-    r = requests.get(FUTURES_OPEN_INTEREST, params={"symbol": symbol}).json()
+    r = requests.get(FUTURES_OPEN_INTEREST, params={"symbol": symbol}, timeout=5).json()
     return float(r.get("openInterest", 0.0))
 
 def get_latest_funding_rate(symbol: str) -> float:
     # get most recent funding rate
-    r = requests.get(FUTURES_FUNDING_RATE, params={"symbol": symbol, "limit": 1}).json()
+    r = requests.get(FUTURES_FUNDING_RATE, params={"symbol": symbol, "limit": 1}, timeout=5).json()
     if isinstance(r, list) and r:
         return float(r[0].get("fundingRate", 0.0))
     return 0.0
@@ -23,7 +23,7 @@ def get_btc_correlation(symbol: str) -> float:
     """
     def fetch_close(sym):
         params = {"symbol": sym, "interval": "1h", "limit": 168}
-        data = requests.get(KLINES, params=params).json()
+        data = requests.get(KLINES, params=params, timeout=5).json()
         return [float(candle[4]) for candle in data]
 
     sym_closes = fetch_close(symbol)

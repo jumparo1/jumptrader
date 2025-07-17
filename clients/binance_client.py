@@ -33,7 +33,7 @@ class BinanceDataClient:
     def get_perpetual_symbols(self) -> List[str]:
         """Get all available perpetual contract symbols."""
         try:
-            exchange_info = requests.get(f"{BINANCE_REST_URL}/fapi/v1/exchangeInfo").json()
+            exchange_info = requests.get(f"{BINANCE_REST_URL}/fapi/v1/exchangeInfo", timeout=10).json()
             symbols = [
                 s["symbol"] for s in exchange_info["symbols"]
                 if s["contractType"] == "PERPETUAL" and s["status"] == "TRADING"
@@ -52,7 +52,7 @@ class BinanceDataClient:
                 "interval": interval,
                 "limit": limit
             }
-            response = requests.get(f"{BINANCE_REST_URL}/fapi/v1/klines", params=params)
+            response = requests.get(f"{BINANCE_REST_URL}/fapi/v1/klines", params=params, timeout=5)
             response.raise_for_status()
             
             klines = response.json()
@@ -83,7 +83,7 @@ class BinanceDataClient:
         """Get 24-hour ticker statistics for a symbol."""
         try:
             params = {"symbol": symbol}
-            response = requests.get(f"{BINANCE_REST_URL}/fapi/v1/ticker/24hr", params=params)
+            response = requests.get(f"{BINANCE_REST_URL}/fapi/v1/ticker/24hr", params=params, timeout=5)
             response.raise_for_status()
             
             data = response.json()
@@ -115,7 +115,7 @@ class BinanceDataClient:
         """Get open interest for a symbol."""
         try:
             params = {"symbol": symbol}
-            response = requests.get(f"{BINANCE_REST_URL}/fapi/v1/openInterest", params=params)
+            response = requests.get(f"{BINANCE_REST_URL}/fapi/v1/openInterest", params=params, timeout=5)
             response.raise_for_status()
             
             data = response.json()
@@ -133,7 +133,7 @@ class BinanceDataClient:
         """Get current funding rate for a symbol."""
         try:
             params = {"symbol": symbol, "limit": 1}
-            response = requests.get(f"{BINANCE_REST_URL}/fapi/v1/fundingRate", params=params)
+            response = requests.get(f"{BINANCE_REST_URL}/fapi/v1/fundingRate", params=params, timeout=5)
             response.raise_for_status()
             
             data = response.json()
